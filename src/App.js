@@ -124,7 +124,7 @@ function StoreDataTab({ days }) {
       </div>
       <div className="metric-row">
         {METRICS.map(m => (
-          <MetricCard key={m.key} metric={m} value={m.fmt(day[m.key]??0)} prev={prev?.(prev[m.key]??null):null} active={activeMetric===m.key} onClick={()=>setActiveMetric(m.key)} />
+          <MetricCard key={m.key} metric={m} value={m.fmt(day[m.key]??0)} prev={prev ? (prev[m.key] ?? null) : null} active={activeMetric===m.key} onClick={()=>setActiveMetric(m.key)} />
         ))}
       </div>
       {names.length > 0 && (
