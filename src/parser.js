@@ -3,7 +3,7 @@ import * as XLSX from 'xlsx';
 function findCol(keys, candidates) {
   for (const c of candidates) {
     const found = keys.find(k =>
-      k.toLowerCase().replace(/[\s_\-]/g, '').includes(c.toLowerCase().replace(/[\s_\-]/g, ''))
+      k.toLowerCase().replace(/[\s_\-\$\/]/g, '').includes(c.toLowerCase().replace(/[\s_\-\$\/]/g, ''))
     );
     if (found !== undefined) return found;
   }
@@ -28,29 +28,15 @@ function isGrandTotalRow(row, keys) {
   return false;
 }
 
-// Normalize any date format to YYYY-MM-DD
 function normalizeDate(raw) {
   if (!raw) return null;
   const s = String(raw).trim();
-
-  // Already YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-
-  // MM/DD/YYYY or M/D/YYYY
   const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   if (mdy) {
     const [, m, d, y] = mdy;
     return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
   }
-
-  // DD/MM/YYYY (less common but handle it)
-  const dmy = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/);
-  if (dmy) {
-    const [, d, m, y] = dmy;
-    return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
-  }
-
-  // Excel serial number (number of days since 1900-01-01)
   const serial = parseFloat(s);
   if (!isNaN(serial) && serial > 40000) {
     const date = new Date((serial - 25569) * 86400 * 1000);
@@ -59,11 +45,8 @@ function normalizeDate(raw) {
     const d = String(date.getUTCDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
   }
-
-  // ISO with time component
   const iso = s.split('T')[0];
   if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
-
   return null;
 }
 
@@ -78,9 +61,15 @@ export function parseFile(file) {
         if (!raw.length) { reject(new Error('No data found in file.')); return; }
 
         const keys = Object.keys(raw[0]);
+
+        // Exact match first, then fuzzy
+        const findExact = (keys, name) => keys.find(k => k.trim().toLowerCase() === name.toLowerCase()) || null;
+
         const storeCol      = findCol(keys, ['store', 'location', 'centre', 'center', 'site', 'branch', 'name']);
-        const revCol        = findCol(keys, ['revenue', 'netsales', 'totalsales', 'sales', 'amount', 'gross']);
-        const cutsCol       = findCol(keys, ['cuts', 'services', 'appointments', 'appts', 'visits', 'bookings', 'count']);
+        // Net Sales: exact "$Net Sales w/o GC" first, then fuzzy
+        const revCol        = findExact(keys, '$Net Sales w/o GC') || findCol(keys, ['netsaleswogc', 'netsaleswithoutgc', 'netsales', 'netsale', 'totalsales', 'sales', 'revenue', 'amount', 'gross']);
+        // Haircut Count: exact first, then fuzzy
+        const cutsCol       = findExact(keys, 'Haircut Count') || findCol(keys, ['haircutcount', 'haircuts', 'hccount', 'haircut']);
         const tsthCol       = findCol(keys, ['tsth', 'salestohour', 'salesperhour', 'sph', 'sth']);
         const productNetCol = findCol(keys, ['productnet', 'prodnet', 'productrevenue']);
         const colorNetCol   = findCol(keys, ['colornet', 'colournet', 'colorrevenue']);
@@ -88,17 +77,10 @@ export function parseFile(file) {
 
         const dataRows = raw.slice(0, -1).filter(row => !isGrandTotalRow(row, keys));
 
-        // Determine file date from first data row or filename
         let fileDate = null;
-        if (dateCol && dataRows[0]) {
-          fileDate = normalizeDate(dataRows[0][dateCol]);
-        }
-        if (!fileDate) {
-          fileDate = normalizeDate(file.name.replace(/\.[^.]+$/, '').trim());
-        }
-        if (!fileDate) {
-          fileDate = new Date().toISOString().split('T')[0];
-        }
+        if (dateCol && dataRows[0]) fileDate = normalizeDate(dataRows[0][dateCol]);
+        if (!fileDate) fileDate = normalizeDate(file.name.replace(/\.[^.]+$/, '').trim());
+        if (!fileDate) fileDate = new Date().toISOString().split('T')[0];
 
         let storeMap = {};
         let totalRev = 0, totalCuts = 0, tsthVals = [];
@@ -113,7 +95,7 @@ export function parseFile(file) {
           const productNet = productNetCol ? (parseNum(row[productNetCol]) ?? 0) : 0;
           const colorNet   = colorNetCol   ? (parseNum(row[colorNetCol])   ?? 0) : 0;
 
-          if (!storeMap[name]) storeMap[name] = { revenue: 0, cuts: 0, tsth: 0, productNet: 0, colorNet: 0 };
+          if (!storeMap[name]) storeMap[name] = { revenue: 0, cuts: 0, productNet: 0, colorNet: 0 };
           storeMap[name].revenue    += rev;
           storeMap[name].cuts       += cuts;
           storeMap[name].productNet += productNet;
@@ -126,9 +108,7 @@ export function parseFile(file) {
           if (tsth !== null && tsth > 0) tsthVals.push(tsth);
         });
 
-        const tsthAvg = tsthVals.length > 0
-          ? tsthVals.reduce((a, v) => a + v, 0) / tsthVals.length
-          : 0;
+        const tsthAvg = tsthVals.length > 0 ? tsthVals.reduce((a, v) => a + v, 0) / tsthVals.length : 0;
 
         Object.keys(storeMap).forEach(name => {
           storeMap[name].revenue    = Math.round(storeMap[name].revenue    * 100) / 100;
@@ -145,6 +125,12 @@ export function parseFile(file) {
           productNet: Math.round(totalProductNet * 100) / 100,
           colorNet:   Math.round(totalColorNet   * 100) / 100,
           stores:     storeMap,
+          // Store raw rows for chatbot queries (store name + all values)
+          rawRows:    dataRows.map(row => {
+            const obj = {};
+            keys.forEach(k => { obj[k] = row[k]; });
+            return obj;
+          }),
           detectedCols: { storeCol, revCol, cutsCol, tsthCol, productNetCol, colorNetCol, dateCol },
           uploadedAt: new Date().toISOString()
         };
