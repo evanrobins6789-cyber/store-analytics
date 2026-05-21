@@ -29,81 +29,85 @@ function Badge({ curr, prev }) {
   );
 }
 
-function MetricCard({ label, value, prev, sub }) {
+const METRICS = [
+  { key: 'revenue',    label: 'Total Revenue',  fmt: fmt$,            prevKey: 'revenue' },
+  { key: 'cuts',       label: 'Total Cuts',      fmt: n => String(n),  prevKey: 'cuts'    },
+  { key: 'tsth',       label: 'Avg TSTH',        fmt: fmt$,            prevKey: 'tsth'    },
+  { key: 'productNet', label: 'Product Net',     fmt: fmt$,            prevKey: 'productNet' },
+  { key: 'colorNet',   label: 'Color Net',       fmt: fmt$,            prevKey: 'colorNet'   },
+];
+
+function MetricCard({ metric, value, prev, active, onClick }) {
   const numVal = parseFloat(String(value).replace(/[$,]/g, ''));
   return (
-    <div className="metric-card">
-      <p className="metric-label">{label}</p>
+    <div
+      className={`metric-card ${active ? 'metric-card-active' : ''}`}
+      onClick={onClick}
+      style={{ cursor: 'pointer' }}
+    >
+      <p className="metric-label">{metric.label}</p>
       <p className="metric-value">{value}</p>
       <div className="metric-sub">
-        {prev !== undefined && <Badge curr={numVal} prev={prev} />}
-        {sub && <span>{sub}</span>}
+        {prev !== undefined && prev !== null && <Badge curr={numVal} prev={prev} />}
+        {active && <span className="active-hint">viewing ↓</span>}
       </div>
-    </div>
-  );
-}
-
-function UploadZone({ onFile, loading }) {
-  const inputRef = useRef();
-  const [dragging, setDragging] = useState(false);
-
-  const handleDrop = e => {
-    e.preventDefault();
-    setDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) onFile(file);
-  };
-
-  return (
-    <div
-      className={`upload-zone ${dragging ? 'dragging' : ''} ${loading ? 'loading' : ''}`}
-      onClick={() => inputRef.current.click()}
-      onDragOver={e => { e.preventDefault(); setDragging(true); }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={handleDrop}
-    >
-      <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv"
-        onChange={e => { if (e.target.files[0]) onFile(e.target.files[0]); e.target.value = ''; }}
-        style={{ display: 'none' }} />
-      <div className="upload-icon">
-        {loading ? <span className="spinner" /> : (
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-            <polyline points="17 8 12 3 7 8"/>
-            <line x1="12" y1="3" x2="12" y2="15"/>
-          </svg>
-        )}
-      </div>
-      <p className="upload-title">{loading ? 'Processing...' : 'Upload daily file'}</p>
-      <p className="upload-sub">Click or drag your Zenoti Excel export here</p>
     </div>
   );
 }
 
 function TodayTab({ days }) {
+  const [activeMetric, setActiveMetric] = useState('revenue');
+
   const day  = days[days.length - 1];
   const prev = days.length > 1 ? days[days.length - 2] : null;
+
   const stores  = day.stores || {};
-  const names   = Object.keys(stores).sort((a, b) => stores[b].revenue - stores[a].revenue);
-  const revVals = names.map(n => Math.round(stores[n].revenue));
+  const names   = Object.keys(stores).sort((a, b) => {
+    const aVal = stores[b][activeMetric] ?? stores[b].revenue ?? 0;
+    const bVal = stores[a][activeMetric] ?? stores[a].revenue ?? 0;
+    return aVal - bVal;
+  });
+
+  const activeM = METRICS.find(m => m.key === activeMetric);
+
+  const getStoreVal = (name) => {
+    const s = stores[name];
+    if (!s) return 0;
+    if (activeMetric === 'revenue')    return Math.round(s.revenue    ?? 0);
+    if (activeMetric === 'cuts')       return Math.round(s.cuts       ?? 0);
+    if (activeMetric === 'tsth')       return Math.round(s.tsth       ?? 0);
+    if (activeMetric === 'productNet') return Math.round(s.productNet ?? 0);
+    if (activeMetric === 'colorNet')   return Math.round(s.colorNet   ?? 0);
+    return 0;
+  };
+
+  const chartVals = names.map(getStoreVal);
 
   const storeChartData = {
     labels: names,
     datasets: [{
-      data: revVals,
+      data: chartVals,
       backgroundColor: names.map((_, i) => i === 0 ? '#c8f04a' : 'rgba(200,240,74,0.25)'),
       borderRadius: 4,
       borderSkipped: false,
     }]
   };
 
+  const isCurrency = activeMetric !== 'cuts';
+
   const storeChartOpts = {
     indexAxis: 'y',
     responsive: true,
     maintainAspectRatio: false,
-    plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ' ' + fmt$(ctx.parsed.x) } } },
+    plugins: {
+      legend: { display: false },
+      tooltip: { callbacks: { label: ctx => ' ' + (isCurrency ? fmt$(ctx.parsed.x) : ctx.parsed.x) } }
+    },
     scales: {
-      x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#666', callback: v => fmt$(v), font: { size: 11, family: 'DM Mono' } } },
+      x: {
+        grid: { color: 'rgba(255,255,255,0.05)' },
+        ticks: { color: '#666', callback: v => isCurrency ? fmt$(v) : v, font: { size: 11, family: 'DM Mono' } }
+      },
       y: { grid: { display: false }, ticks: { color: '#ccc', font: { size: 12, family: 'Syne' } } }
     }
   };
@@ -118,7 +122,9 @@ function TodayTab({ days }) {
         <span className="narrative-date">{dateStr}</span>
         {' — '}Revenue of <strong>{fmt$(day.revenue)}</strong> across <strong>{day.cuts}</strong> cuts.
         {day.tsth > 0 && <> Avg TSTH <strong>{fmt$(day.tsth)}</strong>.</>}
-        {top && <> Top store: <strong>{top}</strong> at <strong>{fmt$(stores[top].revenue)}</strong>.</>}
+        {day.productNet > 0 && <> Product Net <strong>{fmt$(day.productNet)}</strong>.</>}
+        {day.colorNet > 0 && <> Color Net <strong>{fmt$(day.colorNet)}</strong>.</>}
+        {top && <> Top store: <strong>{top}</strong>.</>}
         {prev && (() => {
           const diff = day.revenue - prev.revenue;
           const pct  = Math.abs((diff / (prev.revenue || 1)) * 100).toFixed(1);
@@ -127,14 +133,26 @@ function TodayTab({ days }) {
       </div>
 
       <div className="metric-row">
-        <MetricCard label="Total revenue" value={fmt$(day.revenue)} prev={prev?.revenue} sub="vs prior day" />
-        <MetricCard label="Total cuts"    value={day.cuts}          prev={prev?.cuts}    sub="vs prior day" />
-        <MetricCard label="Avg TSTH"      value={fmt$(day.tsth)}    sub="avg of TSTH col" />
+        {METRICS.map(m => {
+          const val = day[m.key] ?? 0;
+          const prevVal = prev ? (prev[m.key] ?? null) : null;
+          const displayVal = m.fmt(val);
+          return (
+            <MetricCard
+              key={m.key}
+              metric={m}
+              value={displayVal}
+              prev={prevVal}
+              active={activeMetric === m.key}
+              onClick={() => setActiveMetric(m.key)}
+            />
+          );
+        })}
       </div>
 
       {names.length > 0 && (
         <div className="chart-card">
-          <p className="chart-title">Revenue by store</p>
+          <p className="chart-title">{activeM.label} by store</p>
           <div style={{ height: Math.max(220, names.length * 42 + 60) }}>
             <Bar data={storeChartData} options={storeChartOpts} />
           </div>
@@ -177,10 +195,12 @@ function TrendsTab({ days }) {
     }
   };
 
-  const totalRev = filtered.reduce((s, d) => s + d.revenue, 0);
-  const avgCuts  = Math.round(filtered.reduce((s, d) => s + d.cuts, 0) / filtered.length);
-  const avgTsth  = filtered.reduce((s, d) => s + d.tsth, 0) / filtered.length;
-  const best     = filtered.reduce((a, b) => b.revenue > a.revenue ? b : a);
+  const totalRev    = filtered.reduce((s, d) => s + (d.revenue    ?? 0), 0);
+  const avgCuts     = Math.round(filtered.reduce((s, d) => s + (d.cuts ?? 0), 0) / filtered.length);
+  const avgTsth     = filtered.reduce((s, d) => s + (d.tsth ?? 0), 0) / filtered.length;
+  const totalProd   = filtered.reduce((s, d) => s + (d.productNet ?? 0), 0);
+  const totalColor  = filtered.reduce((s, d) => s + (d.colorNet   ?? 0), 0);
+  const best        = filtered.reduce((a, b) => (b.revenue ?? 0) > (a.revenue ?? 0) ? b : a);
 
   return (
     <div className="tab-content">
@@ -197,7 +217,7 @@ function TrendsTab({ days }) {
       <div className="chart-card">
         <p className="chart-title">Daily revenue</p>
         <div style={{ height: 200 }}>
-          <Line data={{ labels, datasets: [{ data: filtered.map(d => Math.round(d.revenue)), borderColor: '#c8f04a', backgroundColor: 'rgba(200,240,74,0.08)', fill: true, tension: 0.35, pointRadius: 3, pointBackgroundColor: '#c8f04a' }] }} options={lineOpts} />
+          <Line data={{ labels, datasets: [{ data: filtered.map(d => Math.round(d.revenue ?? 0)), borderColor: '#c8f04a', backgroundColor: 'rgba(200,240,74,0.08)', fill: true, tension: 0.35, pointRadius: 3, pointBackgroundColor: '#c8f04a' }] }} options={lineOpts} />
         </div>
       </div>
 
@@ -205,13 +225,25 @@ function TrendsTab({ days }) {
         <div className="chart-card">
           <p className="chart-title">Cuts / day</p>
           <div style={{ height: 160 }}>
-            <Bar data={{ labels, datasets: [{ data: filtered.map(d => d.cuts), backgroundColor: 'rgba(200,240,74,0.4)', borderRadius: 3 }] }} options={barOpts} />
+            <Bar data={{ labels, datasets: [{ data: filtered.map(d => d.cuts ?? 0), backgroundColor: 'rgba(200,240,74,0.4)', borderRadius: 3 }] }} options={barOpts} />
           </div>
         </div>
         <div className="chart-card">
           <p className="chart-title">Avg TSTH / day</p>
           <div style={{ height: 160 }}>
-            <Line data={{ labels, datasets: [{ data: filtered.map(d => Math.round(d.tsth * 100) / 100), borderColor: '#7eb8f7', backgroundColor: 'rgba(126,184,247,0.08)', fill: true, tension: 0.35, pointRadius: 3, pointBackgroundColor: '#7eb8f7' }] }} options={{ ...lineOpts }} />
+            <Line data={{ labels, datasets: [{ data: filtered.map(d => Math.round((d.tsth ?? 0) * 100) / 100), borderColor: '#7eb8f7', backgroundColor: 'rgba(126,184,247,0.08)', fill: true, tension: 0.35, pointRadius: 3, pointBackgroundColor: '#7eb8f7' }] }} options={lineOpts} />
+          </div>
+        </div>
+        <div className="chart-card">
+          <p className="chart-title">Product Net / day</p>
+          <div style={{ height: 160 }}>
+            <Line data={{ labels, datasets: [{ data: filtered.map(d => Math.round(d.productNet ?? 0)), borderColor: '#f7a97e', backgroundColor: 'rgba(247,169,126,0.08)', fill: true, tension: 0.35, pointRadius: 3, pointBackgroundColor: '#f7a97e' }] }} options={lineOpts} />
+          </div>
+        </div>
+        <div className="chart-card">
+          <p className="chart-title">Color Net / day</p>
+          <div style={{ height: 160 }}>
+            <Line data={{ labels, datasets: [{ data: filtered.map(d => Math.round(d.colorNet ?? 0)), borderColor: '#c47ef7', backgroundColor: 'rgba(196,126,247,0.08)', fill: true, tension: 0.35, pointRadius: 3, pointBackgroundColor: '#c47ef7' }] }} options={lineOpts} />
           </div>
         </div>
       </div>
@@ -231,8 +263,16 @@ function TrendsTab({ days }) {
           <p className="metric-value">{fmt$(Math.round(avgTsth * 100) / 100)}</p>
         </div>
         <div className="summary-card">
+          <p className="metric-label">Product Net</p>
+          <p className="metric-value">{fmt$(Math.round(totalProd))}</p>
+        </div>
+        <div className="summary-card">
+          <p className="metric-label">Color Net</p>
+          <p className="metric-value">{fmt$(Math.round(totalColor))}</p>
+        </div>
+        <div className="summary-card">
           <p className="metric-label">Best day</p>
-          <p className="metric-value" style={{ fontSize: 18 }}>{fmt$(Math.round(best.revenue))}</p>
+          <p className="metric-value" style={{ fontSize: 18 }}>{fmt$(Math.round(best.revenue ?? 0))}</p>
           <p className="metric-sub"><span>{best.date}</span></p>
         </div>
       </div>
@@ -251,6 +291,8 @@ function HistoryTab({ days }) {
             <span className="history-stat">{d.cuts} cuts</span>
             <span className="history-rev">{fmt$(d.revenue)}</span>
             <span className="history-tsth">TSTH {fmt$(d.tsth)}</span>
+            <span className="history-tsth">Prod {fmt$(d.productNet ?? 0)}</span>
+            <span className="history-tsth">Color {fmt$(d.colorNet ?? 0)}</span>
           </div>
         ))}
       </div>
@@ -265,7 +307,7 @@ function SetupTab() {
         {[
           { n: 1, title: 'Set up your Zenoti export', body: 'In Zenoti, go to Reports → Daily Sales Summary. Schedule an automated daily email in Excel format to a dedicated inbox.' },
           { n: 2, title: 'Upload each morning', body: 'Download the Excel attachment from your email and tap Upload. The last row (grand total) and leading numbers on store names are handled automatically.' },
-          { n: 3, title: 'Data persists forever', body: 'Every upload is saved. Trend charts get richer with every day you add. Access from any device using your app URL.' },
+          { n: 3, title: 'Click a metric card to change the chart', body: 'On the Today tab, tap any of the 5 metric cards — Revenue, Cuts, TSTH, Product Net, or Color Net — to switch the store bar chart to that metric.' },
           { n: 4, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share button → "Add to Home Screen." On Android: open in Chrome → three dots → "Add to Home Screen."' },
         ].map(s => (
           <div key={s.n} className="setup-step">
@@ -359,10 +401,12 @@ export default function App() {
       {colMap && (
         <div className="col-map-bar">
           <span>Detected — </span>
-          {colMap.storeCol && <span>Store: <strong>{colMap.storeCol}</strong></span>}
-          {colMap.revCol   && <span>Revenue: <strong>{colMap.revCol}</strong></span>}
-          {colMap.cutsCol  && <span>Cuts: <strong>{colMap.cutsCol}</strong></span>}
-          {colMap.tsthCol  && <span>TSTH: <strong>{colMap.tsthCol}</strong></span>}
+          {colMap.storeCol      && <span>Store: <strong>{colMap.storeCol}</strong></span>}
+          {colMap.revCol        && <span>Revenue: <strong>{colMap.revCol}</strong></span>}
+          {colMap.cutsCol       && <span>Cuts: <strong>{colMap.cutsCol}</strong></span>}
+          {colMap.tsthCol       && <span>TSTH: <strong>{colMap.tsthCol}</strong></span>}
+          {colMap.productNetCol && <span>Product Net: <strong>{colMap.productNetCol}</strong></span>}
+          {colMap.colorNetCol   && <span>Color Net: <strong>{colMap.colorNetCol}</strong></span>}
         </div>
       )}
 
@@ -375,7 +419,20 @@ export default function App() {
       <main className="app-main">
         {!hasData && tab !== 'Setup' ? (
           <div className="welcome">
-            <UploadZone onFile={handleFile} loading={uploading} />
+            <div className="upload-zone" onClick={() => document.getElementById('main-upload').click()}>
+              <div className="upload-icon">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+              </div>
+              <p className="upload-title">{uploading ? 'Processing...' : 'Upload daily file'}</p>
+              <p className="upload-sub">Click or drag your Zenoti Excel export here</p>
+              <input id="main-upload" type="file" accept=".xlsx,.xls,.csv"
+                onChange={e => { if (e.target.files[0]) handleFile(e.target.files[0]); e.target.value = ''; }}
+                style={{ display: 'none' }} />
+            </div>
             <p className="welcome-hint">or <button className="link-btn" onClick={() => setTab('Setup')}>read the setup guide</button></p>
           </div>
         ) : (
