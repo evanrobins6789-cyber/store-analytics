@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Bar, Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -22,29 +22,26 @@ function Badge({ curr, prev }) {
   const pct = pctChange(curr, prev);
   if (pct === null) return null;
   const up = parseFloat(pct) >= 0;
-  return (
-    <span className={`badge ${up ? 'badge-up' : 'badge-dn'}`}>
-      {up ? '+' : ''}{pct}%
-    </span>
-  );
+  return <span className={`badge ${up ? 'badge-up' : 'badge-dn'}`}>{up ? '+' : ''}{pct}%</span>;
 }
 
 const METRICS = [
-  { key: 'revenue',    label: 'Total Revenue',  fmt: fmt$,            prevKey: 'revenue' },
-  { key: 'cuts',       label: 'Total Cuts',      fmt: n => String(n),  prevKey: 'cuts'    },
-  { key: 'tsth',       label: 'Avg TSTH',        fmt: fmt$,            prevKey: 'tsth'    },
-  { key: 'productNet', label: 'Product Net',     fmt: fmt$,            prevKey: 'productNet' },
-  { key: 'colorNet',   label: 'Color Net',       fmt: fmt$,            prevKey: 'colorNet'   },
+  { key: 'revenue',    label: 'Total Revenue', fmt: fmt$ },
+  { key: 'cuts',       label: 'Total Cuts',    fmt: n => String(n) },
+  { key: 'tsth',       label: 'Avg TSTH',      fmt: fmt$ },
+  { key: 'productNet', label: 'Product Net',   fmt: fmt$ },
+  { key: 'colorNet',   label: 'Color Net',     fmt: fmt$ },
 ];
+
+function getDayOfWeek(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00');
+  return d.toLocaleDateString('en-US', { weekday: 'long' });
+}
 
 function MetricCard({ metric, value, prev, active, onClick }) {
   const numVal = parseFloat(String(value).replace(/[$,]/g, ''));
   return (
-    <div
-      className={`metric-card ${active ? 'metric-card-active' : ''}`}
-      onClick={onClick}
-      style={{ cursor: 'pointer' }}
-    >
+    <div className={`metric-card ${active ? 'metric-card-active' : ''}`} onClick={onClick} style={{ cursor: 'pointer' }}>
       <p className="metric-label">{metric.label}</p>
       <p className="metric-value">{value}</p>
       <div className="metric-sub">
@@ -55,33 +52,21 @@ function MetricCard({ metric, value, prev, active, onClick }) {
   );
 }
 
-function TodayTab({ days }) {
+function StoreDataTab({ days }) {
   const [activeMetric, setActiveMetric] = useState('revenue');
+  const [selectedDate, setSelectedDate] = useState(days[days.length - 1]?.date || '');
 
-  const day  = days[days.length - 1];
-  const prev = days.length > 1 ? days[days.length - 2] : null;
+  const dayIndex = days.findIndex(d => d.date === selectedDate);
+  const day  = days[dayIndex] || days[days.length - 1];
+  const prev = dayIndex > 0 ? days[dayIndex - 1] : null;
 
-  const stores  = day.stores || {};
-  const names   = Object.keys(stores).sort((a, b) => {
-    const aVal = stores[b][activeMetric] ?? stores[b].revenue ?? 0;
-    const bVal = stores[a][activeMetric] ?? stores[a].revenue ?? 0;
-    return aVal - bVal;
-  });
+  const stores = day?.stores || {};
+  const names  = Object.keys(stores).sort((a, b) => (stores[b][activeMetric] ?? 0) - (stores[a][activeMetric] ?? 0));
 
-  const activeM = METRICS.find(m => m.key === activeMetric);
+  const isCurrency = activeMetric !== 'cuts';
+  const activeM    = METRICS.find(m => m.key === activeMetric);
 
-  const getStoreVal = (name) => {
-    const s = stores[name];
-    if (!s) return 0;
-    if (activeMetric === 'revenue')    return Math.round(s.revenue    ?? 0);
-    if (activeMetric === 'cuts')       return Math.round(s.cuts       ?? 0);
-    if (activeMetric === 'tsth')       return Math.round(s.tsth       ?? 0);
-    if (activeMetric === 'productNet') return Math.round(s.productNet ?? 0);
-    if (activeMetric === 'colorNet')   return Math.round(s.colorNet   ?? 0);
-    return 0;
-  };
-
-  const chartVals = names.map(getStoreVal);
+  const chartVals = names.map(n => Math.round(stores[n][activeMetric] ?? 0));
 
   const storeChartData = {
     labels: names,
@@ -93,8 +78,6 @@ function TodayTab({ days }) {
     }]
   };
 
-  const isCurrency = activeMetric !== 'cuts';
-
   const storeChartOpts = {
     indexAxis: 'y',
     responsive: true,
@@ -104,20 +87,33 @@ function TodayTab({ days }) {
       tooltip: { callbacks: { label: ctx => ' ' + (isCurrency ? fmt$(ctx.parsed.x) : ctx.parsed.x) } }
     },
     scales: {
-      x: {
-        grid: { color: 'rgba(255,255,255,0.05)' },
-        ticks: { color: '#666', callback: v => isCurrency ? fmt$(v) : v, font: { size: 11, family: 'DM Mono' } }
-      },
+      x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#666', callback: v => isCurrency ? fmt$(v) : v, font: { size: 11, family: 'DM Mono' } } },
       y: { grid: { display: false }, ticks: { color: '#ccc', font: { size: 12, family: 'Syne' } } }
     }
   };
 
-  const top = names[0];
-  const d = new Date(day.date + 'T12:00:00');
+  const d       = new Date(day.date + 'T12:00:00');
   const dateStr = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  const top     = names[0];
 
   return (
     <div className="tab-content">
+      {/* Date selector */}
+      <div className="date-selector-row">
+        <p className="section-label" style={{ margin: 0 }}>Viewing</p>
+        <select
+          className="date-select"
+          value={selectedDate}
+          onChange={e => setSelectedDate(e.target.value)}
+        >
+          {[...days].reverse().map(d => (
+            <option key={d.date} value={d.date}>
+              {getDayOfWeek(d.date)}, {d.date}
+            </option>
+          ))}
+        </select>
+      </div>
+
       <div className="narrative">
         <span className="narrative-date">{dateStr}</span>
         {' — '}Revenue of <strong>{fmt$(day.revenue)}</strong> across <strong>{day.cuts}</strong> cuts.
@@ -133,21 +129,16 @@ function TodayTab({ days }) {
       </div>
 
       <div className="metric-row">
-        {METRICS.map(m => {
-          const val = day[m.key] ?? 0;
-          const prevVal = prev ? (prev[m.key] ?? null) : null;
-          const displayVal = m.fmt(val);
-          return (
-            <MetricCard
-              key={m.key}
-              metric={m}
-              value={displayVal}
-              prev={prevVal}
-              active={activeMetric === m.key}
-              onClick={() => setActiveMetric(m.key)}
-            />
-          );
-        })}
+        {METRICS.map(m => (
+          <MetricCard
+            key={m.key}
+            metric={m}
+            value={m.fmt(day[m.key] ?? 0)}
+            prev={prev ? (prev[m.key] ?? null) : null}
+            active={activeMetric === m.key}
+            onClick={() => setActiveMetric(m.key)}
+          />
+        ))}
       </div>
 
       {names.length > 0 && (
@@ -165,6 +156,21 @@ function TodayTab({ days }) {
 function TrendsTab({ days }) {
   const [range, setRange] = useState('14');
   const filtered = range === 'all' ? days : days.slice(-parseInt(range));
+
+  // Current calendar month days
+  const now         = new Date();
+  const thisMonth   = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const monthDays   = days.filter(d => d.date.startsWith(thisMonth));
+  const monthRev    = monthDays.reduce((s, d) => s + (d.revenue ?? 0), 0);
+  const contribEst  = monthRev * 0.20;
+
+  // Month-end projection
+  const today         = now.getDate();
+  const daysInMonth   = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const avgDailySales = monthDays.length > 0 ? monthRev / monthDays.length : 0;
+  const remainingDays = daysInMonth - today;
+  const projectedRev  = monthRev + (avgDailySales * remainingDays);
+  const projContrib   = projectedRev * 0.20;
 
   if (filtered.length < 2) {
     return (
@@ -195,12 +201,12 @@ function TrendsTab({ days }) {
     }
   };
 
-  const totalRev    = filtered.reduce((s, d) => s + (d.revenue    ?? 0), 0);
-  const avgCuts     = Math.round(filtered.reduce((s, d) => s + (d.cuts ?? 0), 0) / filtered.length);
-  const avgTsth     = filtered.reduce((s, d) => s + (d.tsth ?? 0), 0) / filtered.length;
-  const totalProd   = filtered.reduce((s, d) => s + (d.productNet ?? 0), 0);
-  const totalColor  = filtered.reduce((s, d) => s + (d.colorNet   ?? 0), 0);
-  const best        = filtered.reduce((a, b) => (b.revenue ?? 0) > (a.revenue ?? 0) ? b : a);
+  const totalRev   = filtered.reduce((s, d) => s + (d.revenue    ?? 0), 0);
+  const avgCuts    = Math.round(filtered.reduce((s, d) => s + (d.cuts ?? 0), 0) / filtered.length);
+  const avgTsth    = filtered.reduce((s, d) => s + (d.tsth ?? 0), 0) / filtered.length;
+  const totalProd  = filtered.reduce((s, d) => s + (d.productNet ?? 0), 0);
+  const totalColor = filtered.reduce((s, d) => s + (d.colorNet   ?? 0), 0);
+  const best       = filtered.reduce((a, b) => (b.revenue ?? 0) > (a.revenue ?? 0) ? b : a);
 
   return (
     <div className="tab-content">
@@ -248,6 +254,7 @@ function TrendsTab({ days }) {
         </div>
       </div>
 
+      {/* Period summary */}
       <div className="summary-grid">
         <div className="summary-card">
           <p className="metric-label">Period revenue</p>
@@ -276,6 +283,36 @@ function TrendsTab({ days }) {
           <p className="metric-sub"><span>{best.date}</span></p>
         </div>
       </div>
+
+      {/* Contribution Est */}
+      <div className="contrib-card">
+        <div className="contrib-header">
+          <p className="chart-title" style={{ margin: 0 }}>Contribution Est — {thisMonth}</p>
+          <span className="contrib-badge">20% of monthly sales</span>
+        </div>
+        <div className="contrib-grid">
+          <div className="contrib-item">
+            <p className="metric-label">Month revenue so far</p>
+            <p className="metric-value">{fmt$(Math.round(monthRev))}</p>
+            <p className="metric-sub"><span>{monthDays.length} days uploaded</span></p>
+          </div>
+          <div className="contrib-item">
+            <p className="metric-label">Contribution est (actual)</p>
+            <p className="metric-value contrib-value">{fmt$(Math.round(contribEst))}</p>
+            <p className="metric-sub"><span>20% of {fmt$(Math.round(monthRev))}</span></p>
+          </div>
+          <div className="contrib-item">
+            <p className="metric-label">Projected month-end rev</p>
+            <p className="metric-value">{fmt$(Math.round(projectedRev))}</p>
+            <p className="metric-sub"><span>{fmt$(Math.round(avgDailySales))}/day avg × {remainingDays} days left</span></p>
+          </div>
+          <div className="contrib-item">
+            <p className="metric-label">Projected contribution</p>
+            <p className="metric-value contrib-value">{fmt$(Math.round(projContrib))}</p>
+            <p className="metric-sub"><span>20% of projected</span></p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -287,7 +324,10 @@ function HistoryTab({ days }) {
       <div className="history-list">
         {[...days].reverse().map(d => (
           <div key={d.date} className="history-row">
-            <span className="history-date">{d.date}</span>
+            <div className="history-date-col">
+              <span className="history-date">{d.date}</span>
+              <span className="history-dow">{getDayOfWeek(d.date)}</span>
+            </div>
             <span className="history-stat">{d.cuts} cuts</span>
             <span className="history-rev">{fmt$(d.revenue)}</span>
             <span className="history-tsth">TSTH {fmt$(d.tsth)}</span>
@@ -307,7 +347,7 @@ function SetupTab() {
         {[
           { n: 1, title: 'Set up your Zenoti export', body: 'In Zenoti, go to Reports → Daily Sales Summary. Schedule an automated daily email in Excel format to a dedicated inbox.' },
           { n: 2, title: 'Upload each morning', body: 'Download the Excel attachment from your email and tap Upload. The last row (grand total) and leading numbers on store names are handled automatically.' },
-          { n: 3, title: 'Click a metric card to change the chart', body: 'On the Today tab, tap any of the 5 metric cards — Revenue, Cuts, TSTH, Product Net, or Color Net — to switch the store bar chart to that metric.' },
+          { n: 3, title: 'Click a metric card to change the chart', body: 'On the Store Data tab, tap any of the 5 metric cards — Revenue, Cuts, TSTH, Product Net, or Color Net — to switch the store bar chart to that metric.' },
           { n: 4, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share button → "Add to Home Screen." On Android: open in Chrome → three dots → "Add to Home Screen."' },
         ].map(s => (
           <div key={s.n} className="setup-step">
@@ -323,11 +363,11 @@ function SetupTab() {
   );
 }
 
-const TABS = ['Today', 'Trends', 'History', 'Setup'];
+const TABS = ['Store Data', 'Trends', 'History', 'Setup'];
 
 export default function App() {
   const [days, setDays]           = useState([]);
-  const [tab, setTab]             = useState('Today');
+  const [tab, setTab]             = useState('Store Data');
   const [loading, setLoading]     = useState(true);
   const [uploading, setUploading] = useState(false);
   const [toast, setToast]         = useState(null);
@@ -353,7 +393,7 @@ export default function App() {
         return next;
       });
       setColMap(entry.detectedCols);
-      setTab('Today');
+      setTab('Store Data');
       showToast(`Loaded ${entry.date} — ${Object.keys(entry.stores).length} stores`);
     } catch (err) {
       showToast(err.message, 'error');
@@ -370,11 +410,7 @@ export default function App() {
     showToast('All data cleared');
   };
 
-  if (loading) return (
-    <div className="app-loading">
-      <div className="spinner large" />
-    </div>
-  );
+  if (loading) return <div className="app-loading"><div className="spinner large" /></div>;
 
   const hasData = days.length > 0;
 
@@ -437,10 +473,10 @@ export default function App() {
           </div>
         ) : (
           <>
-            {tab === 'Today'   && <TodayTab   days={days} />}
-            {tab === 'Trends'  && <TrendsTab  days={days} />}
-            {tab === 'History' && <HistoryTab days={days} />}
-            {tab === 'Setup'   && <SetupTab />}
+            {tab === 'Store Data' && <StoreDataTab days={days} />}
+            {tab === 'Trends'     && <TrendsTab    days={days} />}
+            {tab === 'History'    && <HistoryTab   days={days} />}
+            {tab === 'Setup'      && <SetupTab />}
           </>
         )}
       </main>
