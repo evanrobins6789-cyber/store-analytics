@@ -13,6 +13,40 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointEleme
 
 const fmt$ = n => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 
+// Normalize any date string to YYYY-MM-DD for reliable JS parsing
+function normalizeDate(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (mdy) {
+    const [, m, d, y] = mdy;
+    return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+  }
+  const iso = s.split('T')[0];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+  return s;
+}
+
+function getDayOfWeek(dateStr) {
+  const norm = normalizeDate(dateStr);
+  const d = new Date(norm + 'T12:00:00');
+  if (isNaN(d)) return '';
+  return d.toLocaleDateString('en-US', { weekday: 'long' });
+}
+
+function formatDisplayDate(dateStr) {
+  const norm = normalizeDate(dateStr);
+  const d = new Date(norm + 'T12:00:00');
+  if (isNaN(d)) return dateStr;
+  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+}
+
+function getYearMonth(dateStr) {
+  const norm = normalizeDate(dateStr);
+  return norm ? norm.slice(0, 7) : '';
+}
+
 function pctChange(curr, prev) {
   if (prev === null || prev === undefined || prev === 0) return null;
   return ((curr - prev) / prev * 100).toFixed(1);
@@ -32,11 +66,6 @@ const METRICS = [
   { key: 'productNet', label: 'Product Net',   fmt: fmt$ },
   { key: 'colorNet',   label: 'Color Net',     fmt: fmt$ },
 ];
-
-function getDayOfWeek(dateStr) {
-  const d = new Date(dateStr + 'T12:00:00');
-  return d.toLocaleDateString('en-US', { weekday: 'long' });
-}
 
 function MetricCard({ metric, value, prev, active, onClick }) {
   const numVal = parseFloat(String(value).replace(/[$,]/g, ''));
@@ -65,8 +94,7 @@ function StoreDataTab({ days }) {
 
   const isCurrency = activeMetric !== 'cuts';
   const activeM    = METRICS.find(m => m.key === activeMetric);
-
-  const chartVals = names.map(n => Math.round(stores[n][activeMetric] ?? 0));
+  const chartVals  = names.map(n => Math.round(stores[n][activeMetric] ?? 0));
 
   const storeChartData = {
     labels: names,
@@ -92,30 +120,23 @@ function StoreDataTab({ days }) {
     }
   };
 
-  const d       = new Date(day.date + 'T12:00:00');
-  const dateStr = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
-  const top     = names[0];
+  const top = names[0];
 
   return (
     <div className="tab-content">
-      {/* Date selector */}
       <div className="date-selector-row">
         <p className="section-label" style={{ margin: 0 }}>Viewing</p>
-        <select
-          className="date-select"
-          value={selectedDate}
-          onChange={e => setSelectedDate(e.target.value)}
-        >
+        <select className="date-select" value={selectedDate} onChange={e => setSelectedDate(e.target.value)}>
           {[...days].reverse().map(d => (
             <option key={d.date} value={d.date}>
-              {getDayOfWeek(d.date)}, {d.date}
+              {getDayOfWeek(d.date)}, {normalizeDate(d.date)}
             </option>
           ))}
         </select>
       </div>
 
       <div className="narrative">
-        <span className="narrative-date">{dateStr}</span>
+        <span className="narrative-date">{formatDisplayDate(day.date)}</span>
         {' — '}Revenue of <strong>{fmt$(day.revenue)}</strong> across <strong>{day.cuts}</strong> cuts.
         {day.tsth > 0 && <> Avg TSTH <strong>{fmt$(day.tsth)}</strong>.</>}
         {day.productNet > 0 && <> Product Net <strong>{fmt$(day.productNet)}</strong>.</>}
@@ -154,23 +175,25 @@ function StoreDataTab({ days }) {
 }
 
 function TrendsTab({ days }) {
-  const [range, setRange] = useState('14');
+  const [range, setRange]       = useState('14');
+  const [contribPct, setContribPct] = useState('20');
+
   const filtered = range === 'all' ? days : days.slice(-parseInt(range));
 
-  // Current calendar month days
-  const now         = new Date();
-  const thisMonth   = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  const monthDays   = days.filter(d => d.date.startsWith(thisMonth));
-  const monthRev    = monthDays.reduce((s, d) => s + (d.revenue ?? 0), 0);
-  const contribEst  = monthRev * 0.20;
+  // Current calendar month
+  const now       = new Date();
+  const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const monthDays = days.filter(d => getYearMonth(d.date) === thisMonth);
+  const monthRev  = monthDays.reduce((s, d) => s + (d.revenue ?? 0), 0);
 
-  // Month-end projection
-  const today         = now.getDate();
+  const pct           = parseFloat(contribPct) || 0;
+  const contribEst    = monthRev * (pct / 100);
   const daysInMonth   = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const avgDailySales = monthDays.length > 0 ? monthRev / monthDays.length : 0;
+  const today         = now.getDate();
   const remainingDays = daysInMonth - today;
-  const projectedRev  = monthRev + (avgDailySales * remainingDays);
-  const projContrib   = projectedRev * 0.20;
+  const avgDaily      = monthDays.length > 0 ? monthRev / monthDays.length : 0;
+  const projectedRev  = monthRev + (avgDaily * remainingDays);
+  const projContrib   = projectedRev * (pct / 100);
 
   if (filtered.length < 2) {
     return (
@@ -181,7 +204,7 @@ function TrendsTab({ days }) {
     );
   }
 
-  const labels = filtered.map(d => d.date.slice(5));
+  const labels = filtered.map(d => normalizeDate(d.date).slice(5));
 
   const lineOpts = {
     responsive: true, maintainAspectRatio: false,
@@ -254,7 +277,6 @@ function TrendsTab({ days }) {
         </div>
       </div>
 
-      {/* Period summary */}
       <div className="summary-grid">
         <div className="summary-card">
           <p className="metric-label">Period revenue</p>
@@ -280,7 +302,7 @@ function TrendsTab({ days }) {
         <div className="summary-card">
           <p className="metric-label">Best day</p>
           <p className="metric-value" style={{ fontSize: 18 }}>{fmt$(Math.round(best.revenue ?? 0))}</p>
-          <p className="metric-sub"><span>{best.date}</span></p>
+          <p className="metric-sub"><span>{normalizeDate(best.date)}</span></p>
         </div>
       </div>
 
@@ -288,30 +310,45 @@ function TrendsTab({ days }) {
       <div className="contrib-card">
         <div className="contrib-header">
           <p className="chart-title" style={{ margin: 0 }}>Contribution Est — {thisMonth}</p>
-          <span className="contrib-badge">20% of monthly sales</span>
-        </div>
-        <div className="contrib-grid">
-          <div className="contrib-item">
-            <p className="metric-label">Month revenue so far</p>
-            <p className="metric-value">{fmt$(Math.round(monthRev))}</p>
-            <p className="metric-sub"><span>{monthDays.length} days uploaded</span></p>
-          </div>
-          <div className="contrib-item">
-            <p className="metric-label">Contribution est (actual)</p>
-            <p className="metric-value contrib-value">{fmt$(Math.round(contribEst))}</p>
-            <p className="metric-sub"><span>20% of {fmt$(Math.round(monthRev))}</span></p>
-          </div>
-          <div className="contrib-item">
-            <p className="metric-label">Projected month-end rev</p>
-            <p className="metric-value">{fmt$(Math.round(projectedRev))}</p>
-            <p className="metric-sub"><span>{fmt$(Math.round(avgDailySales))}/day avg × {remainingDays} days left</span></p>
-          </div>
-          <div className="contrib-item">
-            <p className="metric-label">Projected contribution</p>
-            <p className="metric-value contrib-value">{fmt$(Math.round(projContrib))}</p>
-            <p className="metric-sub"><span>20% of projected</span></p>
+          <div className="contrib-pct-row">
+            <span className="contrib-pct-label">Contribution %</span>
+            <input
+              className="contrib-pct-input"
+              type="number"
+              min="1"
+              max="100"
+              value={contribPct}
+              onChange={e => setContribPct(e.target.value)}
+            />
+            <span className="contrib-pct-symbol">%</span>
           </div>
         </div>
+        {monthDays.length === 0 ? (
+          <p className="contrib-empty">No data found for {thisMonth}. Upload files from this month to see estimates.</p>
+        ) : (
+          <div className="contrib-grid">
+            <div className="contrib-item">
+              <p className="metric-label">Month revenue so far</p>
+              <p className="metric-value">{fmt$(Math.round(monthRev))}</p>
+              <p className="metric-sub"><span>{monthDays.length} days uploaded</span></p>
+            </div>
+            <div className="contrib-item">
+              <p className="metric-label">Contribution est (actual)</p>
+              <p className="metric-value contrib-value">{fmt$(Math.round(contribEst))}</p>
+              <p className="metric-sub"><span>{pct}% of {fmt$(Math.round(monthRev))}</span></p>
+            </div>
+            <div className="contrib-item">
+              <p className="metric-label">Projected month-end rev</p>
+              <p className="metric-value">{fmt$(Math.round(projectedRev))}</p>
+              <p className="metric-sub"><span>{fmt$(Math.round(avgDaily))}/day × {remainingDays} days left</span></p>
+            </div>
+            <div className="contrib-item">
+              <p className="metric-label">Projected contribution</p>
+              <p className="metric-value contrib-value">{fmt$(Math.round(projContrib))}</p>
+              <p className="metric-sub"><span>{pct}% of projected</span></p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -325,7 +362,7 @@ function HistoryTab({ days }) {
         {[...days].reverse().map(d => (
           <div key={d.date} className="history-row">
             <div className="history-date-col">
-              <span className="history-date">{d.date}</span>
+              <span className="history-date">{normalizeDate(d.date)}</span>
               <span className="history-dow">{getDayOfWeek(d.date)}</span>
             </div>
             <span className="history-stat">{d.cuts} cuts</span>
@@ -347,7 +384,7 @@ function SetupTab() {
         {[
           { n: 1, title: 'Set up your Zenoti export', body: 'In Zenoti, go to Reports → Daily Sales Summary. Schedule an automated daily email in Excel format to a dedicated inbox.' },
           { n: 2, title: 'Upload each morning', body: 'Download the Excel attachment from your email and tap Upload. The last row (grand total) and leading numbers on store names are handled automatically.' },
-          { n: 3, title: 'Click a metric card to change the chart', body: 'On the Store Data tab, tap any of the 5 metric cards — Revenue, Cuts, TSTH, Product Net, or Color Net — to switch the store bar chart to that metric.' },
+          { n: 3, title: 'Click a metric card to change the chart', body: 'On the Store Data tab, tap any of the 5 metric cards to switch the store bar chart to that metric.' },
           { n: 4, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share button → "Add to Home Screen." On Android: open in Chrome → three dots → "Add to Home Screen."' },
         ].map(s => (
           <div key={s.n} className="setup-step">
@@ -389,7 +426,7 @@ export default function App() {
       await saveDay(entry);
       setDays(prev => {
         const next = [...prev.filter(d => d.date !== entry.date), entry];
-        next.sort((a, b) => a.date.localeCompare(b.date));
+        next.sort((a, b) => normalizeDate(a.date).localeCompare(normalizeDate(b.date)));
         return next;
       });
       setColMap(entry.detectedCols);
@@ -417,7 +454,6 @@ export default function App() {
   return (
     <div className="app">
       {toast && <div className={`toast toast-${toast.type}`}>{toast.msg}</div>}
-
       <header className="app-header">
         <div className="header-left">
           <h1 className="app-title">Store Analytics</h1>

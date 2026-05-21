@@ -28,6 +28,45 @@ function isGrandTotalRow(row, keys) {
   return false;
 }
 
+// Normalize any date format to YYYY-MM-DD
+function normalizeDate(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+
+  // Already YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+  // MM/DD/YYYY or M/D/YYYY
+  const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (mdy) {
+    const [, m, d, y] = mdy;
+    return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+  }
+
+  // DD/MM/YYYY (less common but handle it)
+  const dmy = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/);
+  if (dmy) {
+    const [, d, m, y] = dmy;
+    return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+  }
+
+  // Excel serial number (number of days since 1900-01-01)
+  const serial = parseFloat(s);
+  if (!isNaN(serial) && serial > 40000) {
+    const date = new Date((serial - 25569) * 86400 * 1000);
+    const y = date.getUTCFullYear();
+    const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(date.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  // ISO with time component
+  const iso = s.split('T')[0];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+
+  return null;
+}
+
 export function parseFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -43,25 +82,31 @@ export function parseFile(file) {
         const revCol        = findCol(keys, ['revenue', 'netsales', 'totalsales', 'sales', 'amount', 'gross']);
         const cutsCol       = findCol(keys, ['cuts', 'services', 'appointments', 'appts', 'visits', 'bookings', 'count']);
         const tsthCol       = findCol(keys, ['tsth', 'salestohour', 'salesperhour', 'sph', 'sth']);
-        const productNetCol = findCol(keys, ['productnet', 'prodnet', 'productrevenue', 'productnet']);
-        const colorNetCol   = findCol(keys, ['colornet', 'colournet', 'colorrevenue', 'colornet']);
+        const productNetCol = findCol(keys, ['productnet', 'prodnet', 'productrevenue']);
+        const colorNetCol   = findCol(keys, ['colornet', 'colournet', 'colorrevenue']);
         const dateCol       = findCol(keys, ['date', 'day']);
 
-        // Drop last row (grand total) and any labeled total rows
         const dataRows = raw.slice(0, -1).filter(row => !isGrandTotalRow(row, keys));
 
-        let fileDate = dateCol
-          ? String(dataRows[0]?.[dateCol] || '').split('T')[0].trim()
-          : file.name.replace(/\.[^.]+$/, '').trim();
-        if (!fileDate || fileDate === 'undefined') fileDate = new Date().toISOString().split('T')[0];
+        // Determine file date from first data row or filename
+        let fileDate = null;
+        if (dateCol && dataRows[0]) {
+          fileDate = normalizeDate(dataRows[0][dateCol]);
+        }
+        if (!fileDate) {
+          fileDate = normalizeDate(file.name.replace(/\.[^.]+$/, '').trim());
+        }
+        if (!fileDate) {
+          fileDate = new Date().toISOString().split('T')[0];
+        }
 
         let storeMap = {};
         let totalRev = 0, totalCuts = 0, tsthVals = [];
         let totalProductNet = 0, totalColorNet = 0;
 
         dataRows.forEach(row => {
-          const rawName = storeCol ? String(row[storeCol]) : 'Unknown';
-          const name    = cleanStoreName(rawName);
+          const rawName    = storeCol ? String(row[storeCol]) : 'Unknown';
+          const name       = cleanStoreName(rawName);
           const rev        = revCol        ? (parseNum(row[revCol])        ?? 0) : 0;
           const cuts       = cutsCol       ? (parseNum(row[cutsCol])       ?? 0) : 0;
           const tsth       = tsthCol       ? parseNum(row[tsthCol])             : null;
@@ -85,7 +130,6 @@ export function parseFile(file) {
           ? tsthVals.reduce((a, v) => a + v, 0) / tsthVals.length
           : 0;
 
-        // Round store values
         Object.keys(storeMap).forEach(name => {
           storeMap[name].revenue    = Math.round(storeMap[name].revenue    * 100) / 100;
           storeMap[name].cuts       = Math.round(storeMap[name].cuts);
