@@ -5,7 +5,8 @@ import {
   CategoryScale, LinearScale, BarElement, Tooltip, Legend
 } from 'chart.js';
 import { loadPeriods, savePeriod, clearPeriods, isConfigured } from './db';
-import { parseHoursFile, parseSalesFile, parseRosterFile, normalizeEmployeeName } from './parser';
+import { parseHoursFile, parseSalesFile, normalizeEmployeeName } from './parser';
+import { STORE_ROSTER } from './storeRoster';
 import './App.css';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
@@ -239,7 +240,7 @@ function OverviewTab({ p1, p2, label1, label2 }) {
 }
 
 // ─── Employees tab ──────────────────────────────────────────────────────────
-function buildComparisonRows(p1, p2) {
+function buildComparisonRows(p1, p2, label1, label2) {
   const map = new Map();
   (p1?.employees || []).forEach(e => {
     map.set(normalizeEmployeeName(e.name), { name: e.name, p1: e, p2: null });
@@ -250,7 +251,16 @@ function buildComparisonRows(p1, p2) {
     if (existing) existing.p2 = e;
     else map.set(key, { name: e.name, p1: null, p2: e });
   });
-  return Array.from(map.values());
+  const all = Array.from(map.values());
+
+  // Only employees with complete (hours + sales) data in BOTH periods show
+  // up anywhere — someone present in only one period is excluded entirely.
+  const rows = all.filter(r => r.p1 && r.p2);
+  const excluded = all
+    .filter(r => !(r.p1 && r.p2))
+    .map(r => (r.p1 ? `${r.name} (only has data for ${label1})` : `${r.name} (only has data for ${label2})`));
+
+  return { rows, excluded };
 }
 
 function LedgerTable({ rows, label1, label2 }) {
@@ -295,7 +305,10 @@ function LedgerTable({ rows, label1, label2 }) {
 
 function EmployeesTab({ p1, p2, label1, label2 }) {
   const [sortBy, setSortBy] = useState('delta');
-  const rows = useMemo(() => buildComparisonRows(p1, p2), [p1, p2]);
+  const { rows, excluded: crossPeriodExcluded } = useMemo(
+    () => buildComparisonRows(p1, p2, label1, label2),
+    [p1, p2, label1, label2]
+  );
 
   const sorted = useMemo(() => {
     const arr = [...rows];
@@ -350,6 +363,7 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
     ...(p1?.salesOnly || []).map(n => `${n} (${label1}: sales logged, no matching hours record)`),
     ...(p2?.hoursOnly || []).map(n => `${n} (${label2}: hours logged, no matching sales record)`),
     ...(p2?.salesOnly || []).map(n => `${n} (${label2}: sales logged, no matching hours record)`),
+    ...crossPeriodExcluded,
   ];
 
   if (!rows.length) {
@@ -397,36 +411,27 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
 }
 
 // ─── By Store tab ───────────────────────────────────────────────────────────
-function ByStoreTab({ p1, p2, label1, label2, roster }) {
-  const rows = useMemo(() => buildComparisonRows(p1, p2), [p1, p2]);
+function ByStoreTab({ p1, p2, label1, label2 }) {
+  const { rows } = useMemo(() => buildComparisonRows(p1, p2, label1, label2), [p1, p2, label1, label2]);
 
   const groups = useMemo(() => {
-    if (!roster) return null;
     const byStore = new Map();
-    roster.stores.forEach(s => byStore.set(s.name, []));
+    STORE_ROSTER.stores.forEach(s => byStore.set(s.name, []));
     const unassigned = [];
     [...rows].sort((a, b) => a.name.localeCompare(b.name)).forEach(r => {
-      const store = roster.storeByName[normalizeEmployeeName(r.name)];
+      const store = STORE_ROSTER.storeByName[normalizeEmployeeName(r.name)];
       if (store && byStore.has(store)) byStore.get(store).push(r);
       else unassigned.push(r);
     });
-    const result = roster.stores
+    const result = STORE_ROSTER.stores
       .map(s => ({ name: s.name, rows: byStore.get(s.name) }))
       .filter(g => g.rows.length > 0);
     if (unassigned.length) result.push({ name: 'No store on file', rows: unassigned });
     return result;
-  }, [rows, roster]);
+  }, [rows]);
 
   if (!rows.length) {
-    return <div className="empty-state"><p className="empty-title">No employees yet</p><p>Upload hours and sales files for at least one period first.</p></div>;
-  }
-  if (!roster) {
-    return (
-      <div className="empty-state">
-        <p className="empty-title">No store roster uploaded</p>
-        <p>Upload the employee → store list from the file panel above to group this table by store.</p>
-      </div>
-    );
+    return <div className="empty-state"><p className="empty-title">No employees yet</p><p>Upload hours and sales files with matching data for both periods first.</p></div>;
   }
 
   return (
@@ -447,7 +452,7 @@ function SetupTab({ configured }) {
     { n: 1, title: 'Export your two hours reports', body: 'From your scheduling/POS system, run the attendance (hours) report for each period you want to compare — e.g. this week and last week.' },
     { n: 2, title: 'Export your two sales reports', body: 'Run the service-sales (KPI) report for the exact same two date ranges. The Service Revenue column is the one this app reads.' },
     { n: 3, title: 'Upload all four files', body: 'Tap + on each of the four slots above: Hours and Sales for Period 1, then Hours and Sales for Period 2. The date range label fills in automatically from the file.' },
-    { n: 4, title: 'Optionally upload a store roster', body: 'A simple list of each store and the employees at it. This powers the "By Store" tab, which groups the same metrics by location.' },
+    { n: 4, title: 'Employees are grouped by store automatically', body: 'The "By Store" tab groups this same comparison by location. The employee → store list is built into the app — no upload needed for it.' },
     { n: 5, title: 'Read the comparison', body: 'Overview shows total productivity (TSTH — revenue per labor hour) for each period. Employee Performance shows the same breakdown per person, so you can see who got more efficient and who didn\u2019t. Only employees with both an hours record and a sales record for a period are included.' },
     { n: 6, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
   ];
@@ -488,12 +493,10 @@ const emptyPeriod = { label: '', hours: null, sales: null };
 
 export default function App() {
   const [periods, setPeriods] = useState({ period1: emptyPeriod, period2: emptyPeriod });
-  const [roster, setRoster] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('Overview');
   const [toast, setToast] = useState(null);
   const [uploadingSlot, setUploadingSlot] = useState({}); // { period1: 'hours'|'sales'|null, ... }
-  const [uploadingRoster, setUploadingRoster] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
 
   useEffect(() => {
@@ -502,7 +505,6 @@ export default function App() {
         period1: { ...emptyPeriod, ...(saved.period1 || {}) },
         period2: { ...emptyPeriod, ...(saved.period2 || {}) },
       });
-      setRoster(saved.roster || null);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
@@ -539,25 +541,10 @@ export default function App() {
     });
   }, []);
 
-  const handleRosterFile = useCallback(async file => {
-    setUploadingRoster(true);
-    try {
-      const parsed = await parseRosterFile(file);
-      setRoster(parsed);
-      await savePeriod('roster', parsed);
-      showToast(`Loaded roster — ${parsed.stores.length} stores`);
-    } catch (err) {
-      showToast(err.message, 'error');
-    } finally {
-      setUploadingRoster(false);
-    }
-  }, []);
-
   const handleClearAll = async () => {
     if (!window.confirm('Clear all uploaded files and start over? This cannot be undone.')) return;
     await clearPeriods();
     setPeriods({ period1: emptyPeriod, period2: emptyPeriod });
-    setRoster(null);
     setPanelOpen(true);
     showToast('All data cleared');
   };
@@ -566,7 +553,7 @@ export default function App() {
   const merged2 = useMemo(() => mergePeriod(periods.period2?.hours, periods.period2?.sales), [periods.period2]);
   const label1 = periods.period1?.label || 'Period 1';
   const label2 = periods.period2?.label || 'Period 2';
-  const hasAnyData = !!(periods.period1?.hours || periods.period1?.sales || periods.period2?.hours || periods.period2?.sales || roster);
+  const hasAnyData = !!(periods.period1?.hours || periods.period1?.sales || periods.period2?.hours || periods.period2?.sales);
   const bothComplete = merged1?.complete && merged2?.complete;
 
   if (loading) return <div className="app-loading"><div className="spinner large" /></div>;
@@ -589,21 +576,6 @@ export default function App() {
 
       {(!bothComplete || panelOpen) && (
         <section className="upload-center">
-          <div className="roster-panel">
-            <div className="period-panel-head">
-              <span className="period-eyebrow">Store roster (optional)</span>
-              <p className="roster-hint-text">Maps each employee to a store — powers the "By Store" tab</p>
-            </div>
-            <UploadSlot
-              inputId="roster-file"
-              title="Employee → store list"
-              hint="Upload a file listing each store and its employees"
-              accent="brass"
-              uploading={uploadingRoster}
-              fileInfo={roster ? { fileName: roster.fileName, sub: `${roster.stores.length} stores` } : null}
-              onFile={file => handleRosterFile(file)}
-            />
-          </div>
           <div className="upload-center-grid">
             <PeriodPanel
               periodKey="period1" periodNum="1" period={periods.period1}
@@ -640,7 +612,7 @@ export default function App() {
           <main className="app-main">
             {tab === 'Overview' && <OverviewTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
             {tab === 'Employee Performance' && <EmployeesTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
-            {tab === 'By Store' && <ByStoreTab p1={merged1} p2={merged2} label1={label1} label2={label2} roster={roster} />}
+            {tab === 'By Store' && <ByStoreTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
             {tab === 'Setup' && <SetupTab configured={isConfigured()} />}
           </main>
         </>
