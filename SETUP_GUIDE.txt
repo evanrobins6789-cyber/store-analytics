@@ -1,4 +1,4 @@
-# Store Analytics — Deployment Guide
+# Time & Till — Deployment Guide
 ## Complete step-by-step for beginners
 
 ---
@@ -37,7 +37,7 @@
 
 6. Click the green **"New project"** button
 7. Under "Organization" it will show your name — leave that
-8. Give your project a name — something like `store-analytics`
+8. Give your project a name — something like `time-and-till`
 9. Set a database password — write this down somewhere safe (you won't need it often)
 10. Choose a region closest to you (e.g. "East US")
 11. Click **"Create new project"**
@@ -49,10 +49,10 @@
 14. You'll see a blank text area. Click inside it and paste this exact text:
 
 ```sql
-create table daily_metrics (
-  date text primary key,
+create table periods (
+  period_id text primary key,
   payload jsonb not null,
-  created_at timestamp with time zone default now()
+  updated_at timestamp with time zone default now()
 );
 ```
 
@@ -74,14 +74,14 @@ create table daily_metrics (
 1. Go to **github.com** and make sure you're logged in
 2. Click the **"+"** button in the top right corner
 3. Click **"New repository"**
-4. Name it `store-analytics`
+4. Name it `time-and-till`
 5. Leave everything else as default
 6. Click **"Create repository"**
 
 **Upload the files:**
 
 7. You'll see a page with setup instructions. Look for the link that says **"uploading an existing file"** — click it
-8. A file upload area will appear. Open the folder you downloaded from this chat (`zenoti-dashboard`)
+8. A file upload area will appear. Open the folder you downloaded from this chat (`time-and-till`)
 9. Select ALL the files and folders inside it and drag them into the GitHub upload area
    - Make sure you include: `src/`, `public/`, `package.json`, `vercel.json`, `.env.example`
 10. Scroll down and click **"Commit changes"**
@@ -100,7 +100,7 @@ create table daily_metrics (
 **Deploy your app:**
 
 6. Click **"Add New..."** then **"Project"**
-7. You'll see a list of your GitHub repositories — find `store-analytics` and click **"Import"**
+7. You'll see a list of your GitHub repositories — find `time-and-till` and click **"Import"**
 8. Vercel will detect it's a React app automatically — don't change the settings
 9. **BEFORE clicking Deploy** — look for a section called **"Environment Variables"**
 10. Click to expand it and add two variables:
@@ -115,7 +115,7 @@ create table daily_metrics (
 11. Now click the **"Deploy"** button
 12. Wait about 2–3 minutes — you'll see a progress bar and logs
 13. When it says **"Congratulations!"** your app is live!
-14. Click the **"Visit"** button to open your app — it will have a URL like `store-analytics-abc123.vercel.app`
+14. Click the **"Visit"** button to open your app — it will have a URL like `time-and-till-abc123.vercel.app`
 
 ---
 
@@ -136,12 +136,16 @@ create table daily_metrics (
 
 ---
 
-## PART 6 — Using the app daily
+## PART 6 — Using the app
 
-1. Each morning, download your Zenoti daily Excel report from your email
+1. For each of the two time periods you want to compare, export two files
+   from your scheduling/POS system: an **hours/attendance report** and a
+   **service-sales (KPI) report**, both covering the same date range.
 2. Open the app (from your home screen or the URL)
-3. Tap **"+ Upload"** and select the Excel file
-4. Your dashboard updates instantly
+3. Fill in the four upload slots: Period 1's hours file and sales file,
+   then Period 2's hours file and sales file
+4. The dashboard updates instantly — Overview shows the head-to-head
+   totals, Employees shows the same comparison per staff member
 5. Data is saved — you'll see it next time you open the app on any device
 
 ---

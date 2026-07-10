@@ -1,5 +1,5 @@
 ================================================================
-STORE ANALYTICS APP — STEP BY STEP DEPLOYMENT GUIDE
+TIME & TILL — STEP BY STEP DEPLOYMENT GUIDE
 ================================================================
 Read this entire section before starting anything.
 
@@ -19,32 +19,32 @@ HOW LONG IT TAKES: About 25-35 minutes total.
 WHAT YOU NEED:
   - A computer (not a phone — do this on a computer)
   - An email address you can check
-  - The zip file you downloaded from this chat (zenoti-dashboard.zip)
+  - The zip file you downloaded from this chat (time-and-till.zip)
 
 ================================================================
 STEP 1 — UNZIP THE FILES ON YOUR COMPUTER
 ================================================================
 
-You downloaded a file called "zenoti-dashboard.zip"
+You downloaded a file called "time-and-till.zip"
 It is probably in your Downloads folder.
 
 ON A MAC:
   1. Open your Downloads folder
-  2. Find "zenoti-dashboard.zip"
+  2. Find "time-and-till.zip"
   3. Double-click it
-  4. A new folder called "zenoti-dashboard" will appear next to it
+  4. A new folder called "time-and-till" will appear next to it
   5. Leave that folder where it is for now
 
 ON A WINDOWS PC:
   1. Open your Downloads folder
-  2. Find "zenoti-dashboard.zip"
+  2. Find "time-and-till.zip"
   3. Right-click on it
   4. Click "Extract All..."
   5. Click "Extract" on the window that pops up
-  6. A new folder called "zenoti-dashboard" will appear
+  6. A new folder called "time-and-till" will appear
   7. Leave that folder where it is for now
 
-You should now have a folder called "zenoti-dashboard" in your
+You should now have a folder called "time-and-till" in your
 Downloads folder. If you open it you will see files inside like
 "package.json", "vercel.json", and folders like "src" and "public".
 That is correct. Do not move or rename anything inside.
@@ -100,7 +100,7 @@ Now create a place to put your files (called a "repository"):
   13. A small dropdown menu will appear. Click "New repository"
 
   14. You will see a form. Fill it in like this:
-        - "Repository name" field: type   store-analytics
+        - "Repository name" field: type   time-and-till
         - Everything else: leave it exactly as it is
         - Do NOT check any of the checkboxes
 
@@ -126,10 +126,10 @@ Now upload your files to this repository:
       words "Drag files here to add them to your repository"
 
   19. Open your Downloads folder in a separate window
-      Find the "zenoti-dashboard" folder
+      Find the "time-and-till" folder
       Open it so you can see the files INSIDE it
 
-  20. You need to select everything inside the zenoti-dashboard
+  20. You need to select everything inside the time-and-till
       folder. Here is how:
 
       ON MAC:
@@ -195,7 +195,7 @@ Now create your database project:
   8. You will see a form. Fill it in:
        - Under "Organization" you will see your GitHub username —
          leave that as is, do not change it
-       - "Name" field: type   store-analytics
+       - "Name" field: type   time-and-till
        - "Database Password" field: make up a strong password
          and type it in. WRITE THIS DOWN. You will not need it
          often but it is important to save it.
@@ -211,7 +211,7 @@ Now create your database project:
       It takes about 1-2 minutes.
 
   11. When it finishes you will see your project dashboard page
-      with the name "store-analytics" at the top
+      with the name "time-and-till" at the top
 
 ----------------------------------------------------------------
 Now create the table that stores your data:
@@ -235,10 +235,10 @@ Now create the table that stores your data:
   14. Type (or copy and paste) EXACTLY the following text into
       that blank area. Copy it exactly, do not change anything:
 
-      create table daily_metrics (
-        date text primary key,
+      create table periods (
+        period_id text primary key,
         payload jsonb not null,
-        created_at timestamp with time zone default now()
+        updated_at timestamp with time zone default now()
       );
 
   15. Now click the green "Run" button. It is usually in the
@@ -320,7 +320,7 @@ Now import your code and deploy the app:
 
   9. You will see a list on the left that says "Import Git Repository"
      and shows your GitHub repositories.
-     You should see "store-analytics" in the list.
+     You should see "time-and-till" in the list.
      Click the "Import" button next to it.
 
   10. You will see a configuration screen.
@@ -369,11 +369,11 @@ Now import your code and deploy the app:
 
   16. On your dashboard you will see your app URL.
       It will look something like:
-      store-analytics-abc123.vercel.app
+      time-and-till-abc123.vercel.app
       That is your app. It is live on the internet right now.
 
   17. Click "Visit" or click the URL to open your app.
-      It should open and show the Store Analytics dashboard.
+      It should open and show the Time & Till dashboard.
 
   ✓ Your app is live!
 
@@ -386,17 +386,17 @@ ON AN IPHONE:
      NOTE: It MUST be Safari. Chrome on iPhone will not work
      for adding to home screen.
   2. Type your app URL into the address bar and go to it
-     Example: store-analytics-abc123.vercel.app
+     Example: time-and-till-abc123.vercel.app
   3. Wait for the page to fully load
   4. At the bottom of the screen, tap the Share button
      (it looks like a box with an arrow pointing up out of it)
   5. Scroll down in the menu that pops up
   6. Tap "Add to Home Screen"
-  7. It will show a name — you can change it to "Store Analytics"
+  7. It will show a name — you can change it to "Time & Till"
      or leave it as is
   8. Tap "Add" in the top right corner
   9. Press your Home button or swipe up to go to your home screen
-  10. You will see the Store Analytics icon on your home screen
+  10. You will see the Time & Till icon on your home screen
   11. Tap it — it opens like a real app, full screen, no browser bar
 
 ON AN ANDROID PHONE:
@@ -409,26 +409,30 @@ ON AN ANDROID PHONE:
   7. The icon will appear on your home screen
 
 ================================================================
-STEP 6 — HOW TO USE IT EVERY DAY
+STEP 6 — HOW TO USE THE APP
 ================================================================
 
-Your morning routine will be:
+The app compares two time periods against each other — hours
+worked vs. service sales — so each use, you'll need four files:
 
-  1. Your POS system emails a daily Excel report to your inbox
-  2. On your phone or computer, open the email and download the
-     Excel file attachment
-  3. Open the Store Analytics app (from your home screen icon
-     or by going to your URL)
-  4. Tap "+ Upload" in the top right corner
-  5. Select the Excel file you just downloaded
-  6. The dashboard updates in seconds
-  7. You will see:
-       - Total revenue, total cuts, avg TSTH for the day
-       - A bar chart showing each store's revenue
-       - Comparison to the prior day (up or down %)
-       - A written summary at the top
-  8. Tap "Trends" to see your charts over time
-  9. Tap "History" to see every day ever uploaded
+  1. From your scheduling/POS system, export an hours/attendance
+     report and a service-sales (KPI) report for Period 1
+     (e.g. last week)
+  2. Do the same for Period 2 (e.g. this week) — same two report
+     types, same kind of date range
+  3. Open the Time & Till app (from your home screen icon or by
+     going to your URL)
+  4. Fill in the four upload slots — Period 1's hours file and
+     sales file, then Period 2's hours file and sales file
+  5. The dashboard updates in seconds. You will see:
+       - Overview: total hours, total service revenue, and
+         revenue-per-labor-hour for each period, with a balance
+         scale showing which period was more productive
+       - Employees: the same comparison broken out per staff
+         member, plus a chart of revenue-per-hour by employee
+  6. Once both periods are loaded, tap "Hide file panel" to get
+     it out of the way — tap "Manage the 4 uploaded files" any
+     time to swap a file out
 
 Your data is saved in Supabase. It will be there tomorrow,
 next week, next month. Every device that opens your URL will
@@ -449,10 +453,19 @@ FIX: This means Supabase is not connected. Your environment
      Go to vercel.com → your project → Settings → Environment
      Variables and check both values carefully.
 
-PROBLEM: I uploaded a file but nothing showed up
-FIX: Make sure the Excel file is from Zenoti's daily report.
-     The app looks for specific column names. Check that the
-     "Detected columns" bar appeared after uploading.
+PROBLEM: I uploaded a file and got an error toast
+FIX: The hours file needs an "Actual Hours" column, and the
+     sales file needs a "Service Revenue" column. Make sure
+     you're uploading the right report into the right slot
+     (Hours worked vs. Service sales).
+
+PROBLEM: I see a warning about names that only appear in one file
+FIX: This means an employee's name is spelled slightly
+     differently between the two reports (or they only appear
+     in one of them). Check the list shown and fix the spelling
+     in the source system if needed — it won't stop the app
+     from working, it just means that person's row will be
+     incomplete.
 
 PROBLEM: I can't find "uploading an existing file" on GitHub
 FIX: When you create a new empty repository, GitHub shows a

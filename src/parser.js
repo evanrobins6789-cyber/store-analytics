@@ -1,146 +1,242 @@
 import * as XLSX from 'xlsx';
 
-function findCol(keys, candidates) {
-  for (const c of candidates) {
-    const found = keys.find(k =>
-      k.toLowerCase().replace(/[\s_\-\$\/]/g, '').includes(c.toLowerCase().replace(/[\s_\-\$\/]/g, ''))
-    );
-    if (found !== undefined) return found;
+// ─── Grid helpers ───────────────────────────────────────────────────────────
+// We read the sheet cell-by-cell (rather than sheet_to_json) because these
+// reports don't have a fixed header row — the date range and location sit in
+// free-floating text rows above the real table, and we need both the raw
+// value (.v) and the display text (.w, e.g. "45:08") for each cell.
+
+function sheetToGrid(ws) {
+  const ref = ws['!ref'];
+  if (!ref) return [];
+  const range = XLSX.utils.decode_range(ref);
+  const grid = [];
+  for (let r = range.s.r; r <= range.e.r; r++) {
+    const row = [];
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      const cell = ws[addr];
+      if (!cell) { row.push({ v: '', w: '' }); continue; }
+      const v = cell.v !== undefined ? cell.v : '';
+      const w = cell.w !== undefined ? String(cell.w) : String(v);
+      row.push({ v, w });
+    }
+    grid.push(row);
+  }
+  return grid;
+}
+
+function cellText(cell) {
+  return String(cell?.w ?? '').trim();
+}
+
+function rowHasData(row) {
+  return row.some(c => cellText(c) !== '');
+}
+
+// Find the first "From : ... To : ..." style date range anywhere near the top
+function findDateRange(grid) {
+  const re = /from\s*:?\s*(.+?)\s+to\s*:?\s*(.+?)(?:\s{2,}|\s+by\s*:|\s+report\b|$)/i;
+  for (let r = 0; r < Math.min(grid.length, 10); r++) {
+    for (const cell of grid[r]) {
+      const t = cellText(cell);
+      const m = t.match(re);
+      if (m) {
+        const from = m[1].trim();
+        const to = m[2].trim();
+        return { from, to, label: `${from} – ${to}` };
+      }
+    }
   }
   return null;
 }
 
-function parseNum(v) {
-  if (v === null || v === undefined || v === '') return null;
-  const n = parseFloat(String(v).replace(/[$,%]/g, '').trim());
-  return isNaN(n) ? null : n;
-}
-
-function cleanStoreName(name) {
-  return String(name).replace(/^\d+[\s\-–—:\.]*/, '').trim();
-}
-
-function isGrandTotalRow(row, keys) {
-  for (const k of keys.slice(0, 4)) {
-    const val = String(row[k] || '').toLowerCase().trim();
-    if (['total', 'grand total', 'totals', 'subtotal'].includes(val)) return true;
+// Find the {row, col} of the first cell whose display text matches a matcher,
+// trying each matcher (in priority order) as a full pass over the whole grid.
+function findHeaderCol(grid, matchers) {
+  for (const matcher of matchers) {
+    for (let r = 0; r < grid.length; r++) {
+      for (let c = 0; c < grid[r].length; c++) {
+        const t = cellText(grid[r][c]).toLowerCase();
+        if (t && matcher(t)) return { row: r, col: c };
+      }
+    }
   }
-  return false;
-}
-
-function normalizeDate(raw) {
-  if (!raw) return null;
-  const s = String(raw).trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (mdy) {
-    const [, m, d, y] = mdy;
-    return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
-  }
-  const serial = parseFloat(s);
-  if (!isNaN(serial) && serial > 40000) {
-    const date = new Date((serial - 25569) * 86400 * 1000);
-    const y = date.getUTCFullYear();
-    const m = String(date.getUTCMonth() + 1).padStart(2, '0');
-    const d = String(date.getUTCDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-  }
-  const iso = s.split('T')[0];
-  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
   return null;
 }
 
-export function parseFile(file) {
+function cleanEmployeeName(raw) {
+  return String(raw).replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export function normalizeEmployeeName(raw) {
+  return cleanEmployeeName(raw).toLowerCase();
+}
+
+// Convert a decimal hours value back into a "45h 08m" style display string
+export function decimalToHoursDisplay(decimal) {
+  if (decimal == null || isNaN(decimal)) return '—';
+  const totalMinutes = Math.round(decimal * 60);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return `${h}h ${String(m).padStart(2, '0')}m`;
+}
+
+// Parse an "Actual Hours" cell. These are stored as Excel elapsed-time values
+// ([h]:mm format), so a value over 24 hours shows as e.g. "45:08" rather than
+// wrapping — SheetJS renders that correctly into cell.w, so we parse the text
+// directly. If for some reason no formatted text is available, we fall back
+// to treating the raw numeric value as a day-fraction (Excel's native storage
+// for elapsed time).
+function parseHoursCell(cell) {
+  const text = cellText(cell);
+  const m = text.match(/^(\d{1,5}):(\d{2})(?::\d{2})?$/);
+  if (m) {
+    const hours = parseInt(m[1], 10);
+    const minutes = parseInt(m[2], 10);
+    return { hours, minutes, decimal: hours + minutes / 60 };
+  }
+  const num = Number(cell?.v);
+  if (!isNaN(num) && cell?.v !== '') {
+    const totalMinutes = Math.round(num * 24 * 60);
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return { hours, minutes, decimal: hours + minutes / 60 };
+  }
+  return null;
+}
+
+function readWorkbookGrid(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = ev => {
       try {
         const wb = XLSX.read(ev.target.result, { type: 'array' });
         const ws = wb.Sheets[wb.SheetNames[0]];
-        const raw = XLSX.utils.sheet_to_json(ws, { defval: '' });
-        if (!raw.length) { reject(new Error('No data found in file.')); return; }
-
-        const keys = Object.keys(raw[0]);
-
-        // Exact match first, then fuzzy
-        const findExact = (keys, name) => keys.find(k => k.trim().toLowerCase() === name.toLowerCase()) || null;
-
-        const storeCol      = findCol(keys, ['store', 'location', 'centre', 'center', 'site', 'branch', 'name']);
-        // Net Sales: exact "$Net Sales w/o GC" first, then fuzzy
-        const revCol        = findExact(keys, '$Net Sales w/o GC') || findCol(keys, ['netsaleswogc', 'netsaleswithoutgc', 'netsales', 'netsale', 'totalsales', 'sales', 'revenue', 'amount', 'gross']);
-        // Haircut Count: exact first, then fuzzy
-        const cutsCol       = findExact(keys, 'Haircut Count') || findCol(keys, ['haircutcount', 'haircuts', 'hccount', 'haircut']);
-        const tsthCol       = findCol(keys, ['tsth', 'salestohour', 'salesperhour', 'sph', 'sth']);
-        const productNetCol = findCol(keys, ['productnet', 'prodnet', 'productrevenue']);
-        const colorNetCol   = findCol(keys, ['colornet', 'colournet', 'colorrevenue']);
-        const dateCol       = findCol(keys, ['date', 'day']);
-
-        const dataRows = raw.slice(0, -1).filter(row => !isGrandTotalRow(row, keys));
-
-        let fileDate = null;
-        if (dateCol && dataRows[0]) fileDate = normalizeDate(dataRows[0][dateCol]);
-        if (!fileDate) fileDate = normalizeDate(file.name.replace(/\.[^.]+$/, '').trim());
-        if (!fileDate) fileDate = new Date().toISOString().split('T')[0];
-
-        let storeMap = {};
-        let totalRev = 0, totalCuts = 0, tsthVals = [];
-        let totalProductNet = 0, totalColorNet = 0;
-
-        dataRows.forEach(row => {
-          const rawName    = storeCol ? String(row[storeCol]) : 'Unknown';
-          const name       = cleanStoreName(rawName);
-          const rev        = revCol        ? (parseNum(row[revCol])        ?? 0) : 0;
-          const cuts       = cutsCol       ? (parseNum(row[cutsCol])       ?? 0) : 0;
-          const tsth       = tsthCol       ? parseNum(row[tsthCol])             : null;
-          const productNet = productNetCol ? (parseNum(row[productNetCol]) ?? 0) : 0;
-          const colorNet   = colorNetCol   ? (parseNum(row[colorNetCol])   ?? 0) : 0;
-
-          if (!storeMap[name]) storeMap[name] = { revenue: 0, cuts: 0, productNet: 0, colorNet: 0 };
-          storeMap[name].revenue    += rev;
-          storeMap[name].cuts       += cuts;
-          storeMap[name].productNet += productNet;
-          storeMap[name].colorNet   += colorNet;
-
-          totalRev        += rev;
-          totalCuts       += cuts;
-          totalProductNet += productNet;
-          totalColorNet   += colorNet;
-          if (tsth !== null && tsth > 0) tsthVals.push(tsth);
-        });
-
-        const tsthAvg = tsthVals.length > 0 ? tsthVals.reduce((a, v) => a + v, 0) / tsthVals.length : 0;
-
-        Object.keys(storeMap).forEach(name => {
-          storeMap[name].revenue    = Math.round(storeMap[name].revenue    * 100) / 100;
-          storeMap[name].cuts       = Math.round(storeMap[name].cuts);
-          storeMap[name].productNet = Math.round(storeMap[name].productNet * 100) / 100;
-          storeMap[name].colorNet   = Math.round(storeMap[name].colorNet   * 100) / 100;
-        });
-
-        const entry = {
-          date:       fileDate,
-          revenue:    Math.round(totalRev        * 100) / 100,
-          cuts:       Math.round(totalCuts),
-          tsth:       Math.round(tsthAvg         * 100) / 100,
-          productNet: Math.round(totalProductNet * 100) / 100,
-          colorNet:   Math.round(totalColorNet   * 100) / 100,
-          stores:     storeMap,
-          // Store raw rows for chatbot queries (store name + all values)
-          rawRows:    dataRows.map(row => {
-            const obj = {};
-            keys.forEach(k => { obj[k] = row[k]; });
-            return obj;
-          }),
-          detectedCols: { storeCol, revCol, cutsCol, tsthCol, productNetCol, colorNetCol, dateCol },
-          uploadedAt: new Date().toISOString()
-        };
-
-        resolve(entry);
+        const grid = sheetToGrid(ws);
+        if (!grid.length) { reject(new Error('No data found in file.')); return; }
+        resolve(grid);
       } catch (err) {
-        reject(new Error('Could not parse file. Make sure it is a Zenoti Excel export.'));
+        reject(new Error('Could not read this file. Make sure it is a valid Excel export.'));
       }
     };
     reader.onerror = () => reject(new Error('Failed to read file.'));
     reader.readAsArrayBuffer(file);
   });
+}
+
+// ─── Hours / Attendance report ──────────────────────────────────────────────
+// Expected shape: a location name, a "From : ... To : ..." line, then a table
+// of Employee Name | Actual Hours, ending in a "Total:" row.
+export async function parseHoursFile(file) {
+  const grid = await readWorkbookGrid(file);
+
+  const dateRange = findDateRange(grid);
+
+  let location = null;
+  for (let r = 0; r < Math.min(grid.length, 3) && !location; r++) {
+    for (const cell of grid[r]) {
+      const t = cellText(cell);
+      if (t && !/from\s*:/i.test(t)) { location = t; break; }
+    }
+  }
+
+  const hdr = findHeaderCol(grid, [
+    t => t === 'actual hours',
+    t => t.includes('actual') && t.includes('hour'),
+    t => t.includes('hour'),
+  ]);
+  if (!hdr) throw new Error('Could not find an "Actual Hours" column in this file. Make sure it is an hours/attendance export.');
+
+  const nameCol = 0;
+  const hoursCol = hdr.col;
+  const employees = [];
+  let totalFromFooter = null;
+
+  for (let r = hdr.row + 1; r < grid.length; r++) {
+    const row = grid[r];
+    if (!rowHasData(row)) continue;
+    const nameText = cellText(row[nameCol]);
+
+    if (/^(grand\s*)?total\s*:?$/i.test(nameText)) {
+      const parsed = parseHoursCell(row[hoursCol]);
+      if (parsed) totalFromFooter = parsed.decimal;
+      continue;
+    }
+    if (!nameText) continue;
+
+    const parsed = parseHoursCell(row[hoursCol]);
+    if (!parsed) continue;
+
+    employees.push({
+      name: cleanEmployeeName(nameText),
+      hoursDecimal: Math.round(parsed.decimal * 100) / 100,
+      hoursDisplay: `${parsed.hours}h ${String(parsed.minutes).padStart(2, '0')}m`,
+    });
+  }
+
+  const totalHoursDecimal = totalFromFooter != null
+    ? Math.round(totalFromFooter * 100) / 100
+    : Math.round(employees.reduce((s, e) => s + e.hoursDecimal, 0) * 100) / 100;
+
+  return {
+    location,
+    dateRangeLabel: dateRange ? dateRange.label : null,
+    totalHoursDecimal,
+    totalHoursDisplay: decimalToHoursDisplay(totalHoursDecimal),
+    employees,
+    fileName: file.name,
+  };
+}
+
+// ─── Sales / KPI report ─────────────────────────────────────────────────────
+// Expected shape: a wide KPI table, one row per employee, first column is the
+// employee identifier, ending in a "Grand Total" row. We only care about the
+// "Service Revenue" column.
+export async function parseSalesFile(file) {
+  const grid = await readWorkbookGrid(file);
+
+  const dateRange = findDateRange(grid);
+
+  const hdr = findHeaderCol(grid, [
+    t => t === 'service revenue',
+    t => t.includes('service') && t.includes('revenue') && !t.includes('average') && !t.includes('invoice') && !t.includes('collection'),
+  ]);
+  if (!hdr) throw new Error('Could not find a "Service Revenue" column in this file. Make sure it is a sales/KPI export.');
+
+  const nameCol = 0;
+  const revCol = hdr.col;
+  const employees = [];
+  let otherRevenue = 0;
+  let grandTotal = null;
+
+  for (let r = hdr.row + 1; r < grid.length; r++) {
+    const row = grid[r];
+    if (!rowHasData(row)) continue;
+    const nameText = cellText(row[nameCol]);
+
+    const rawRev = row[revCol]?.v;
+    const rev = typeof rawRev === 'number'
+      ? rawRev
+      : (parseFloat(String(rawRev).replace(/[$,]/g, '')) || 0);
+
+    if (/^grand\s*total\s*:?$/i.test(nameText)) { grandTotal = rev; continue; }
+
+    const cleanName = cleanEmployeeName(nameText);
+    if (!cleanName) { otherRevenue += rev; continue; }
+
+    employees.push({ name: cleanName, serviceRevenue: Math.round(rev * 100) / 100 });
+  }
+
+  const totalServiceRevenue = grandTotal != null
+    ? Math.round(grandTotal * 100) / 100
+    : Math.round((employees.reduce((s, e) => s + e.serviceRevenue, 0) + otherRevenue) * 100) / 100;
+
+  return {
+    dateRangeLabel: dateRange ? dateRange.label : null,
+    totalServiceRevenue,
+    otherRevenue: Math.round(otherRevenue * 100) / 100,
+    employees,
+    fileName: file.name,
+  };
 }

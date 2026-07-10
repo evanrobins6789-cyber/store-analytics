@@ -9,43 +9,43 @@ export const supabase = SUPABASE_URL
 
 export const isConfigured = () => !!SUPABASE_URL && !!SUPABASE_ANON_KEY;
 
-// Load all days from Supabase or localStorage fallback
-export async function loadDays() {
+const LOCAL_KEY = 'time_and_till_periods_v1';
+
+// Load both periods. Returns { period1: payload|undefined, period2: payload|undefined }
+export async function loadPeriods() {
   if (supabase) {
-    const { data, error } = await supabase
-      .from('daily_metrics')
-      .select('*')
-      .order('date', { ascending: true });
-    if (!error && data) return data.map(r => ({ ...r.payload, date: r.date }));
+    const { data, error } = await supabase.from('periods').select('*');
+    if (!error && data) {
+      const out = {};
+      data.forEach(row => { out[row.period_id] = row.payload; });
+      return out;
+    }
   }
   try {
-    const raw = localStorage.getItem('zenoti_days_v1');
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
+    const raw = localStorage.getItem(LOCAL_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
 }
 
-// Save a single day entry
-export async function saveDay(entry) {
+// Save one period's payload ({ label, hours, sales })
+export async function savePeriod(periodId, payload) {
   if (supabase) {
     const { error } = await supabase
-      .from('daily_metrics')
-      .upsert({ date: entry.date, payload: entry }, { onConflict: 'date' });
+      .from('periods')
+      .upsert({ period_id: periodId, payload }, { onConflict: 'period_id' });
     if (error) console.error('Supabase save error', error);
   }
-  // Always keep localStorage as fallback
   try {
-    const raw = localStorage.getItem('zenoti_days_v1');
-    let days = raw ? JSON.parse(raw) : [];
-    const idx = days.findIndex(d => d.date === entry.date);
-    if (idx >= 0) days[idx] = entry; else days.push(entry);
-    days.sort((a, b) => a.date.localeCompare(b.date));
-    localStorage.setItem('zenoti_days_v1', JSON.stringify(days));
+    const raw = localStorage.getItem(LOCAL_KEY);
+    const all = raw ? JSON.parse(raw) : {};
+    all[periodId] = payload;
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(all));
   } catch {}
 }
 
-export async function clearDays() {
+export async function clearPeriods() {
   if (supabase) {
-    await supabase.from('daily_metrics').delete().neq('date', '');
+    await supabase.from('periods').delete().neq('period_id', '');
   }
-  localStorage.removeItem('zenoti_days_v1');
+  localStorage.removeItem(LOCAL_KEY);
 }

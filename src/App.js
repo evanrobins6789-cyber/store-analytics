@@ -1,378 +1,441 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Bar, Line } from 'react-chartjs-2';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Bar } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
-  CategoryScale, LinearScale, BarElement, LineElement,
-  PointElement, Filler, Tooltip
+  CategoryScale, LinearScale, BarElement, Tooltip, Legend
 } from 'chart.js';
-import { loadDays, saveDay, clearDays, isConfigured } from './db';
-import { parseFile } from './parser';
+import { loadPeriods, savePeriod, clearPeriods, isConfigured } from './db';
+import { parseHoursFile, parseSalesFile, normalizeEmployeeName } from './parser';
 import './App.css';
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Filler, Tooltip);
+ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
 
-const fmt$ = n => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-
-function normalizeDate(raw) {
-  if (!raw) return '';
-  const s = String(raw).trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (mdy) { const [,m,d,y] = mdy; return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`; }
-  const iso = s.split('T')[0];
-  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
-  return s;
-}
-
-function getDayOfWeek(dateStr) {
-  const norm = normalizeDate(dateStr);
-  const d = new Date(norm + 'T12:00:00');
-  if (isNaN(d)) return '';
-  return d.toLocaleDateString('en-US', { weekday: 'long' });
-}
-
-function formatDisplayDate(dateStr) {
-  const norm = normalizeDate(dateStr);
-  const d = new Date(norm + 'T12:00:00');
-  if (isNaN(d)) return dateStr;
-  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
-}
-
-function getYearMonth(dateStr) {
-  return normalizeDate(dateStr).slice(0, 7);
-}
+const fmt$ = n => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+const fmtRate = n => (n == null ? '—' : `$${n.toFixed(2)}/hr`);
 
 function pctChange(curr, prev) {
   if (!prev) return null;
-  return ((curr - prev) / prev * 100).toFixed(1);
+  return ((curr - prev) / Math.abs(prev) * 100).toFixed(1);
 }
 
 function Badge({ curr, prev }) {
   const pct = pctChange(curr, prev);
-  if (pct === null) return null;
+  if (pct === null || isNaN(pct)) return null;
   const up = parseFloat(pct) >= 0;
-  return <span className={`badge ${up ? 'badge-up' : 'badge-dn'}`}>{up?'+':''}{pct}%</span>;
+  return <span className={`badge ${up ? 'badge-up' : 'badge-dn'}`}>{up ? '+' : ''}{pct}%</span>;
 }
 
-const METRICS = [
-  { key: 'revenue',    label: 'Net Sales',    fmt: fmt$ },
-  { key: 'cuts',       label: 'Haircut Count', fmt: n => String(n) },
-  { key: 'tsth',       label: 'Avg TSTH',     fmt: fmt$ },
-  { key: 'productNet', label: 'Product Net',  fmt: fmt$ },
-  { key: 'colorNet',   label: 'Color Net',    fmt: fmt$ },
-];
+// ─── Merge one period's hours + sales into a single comparable dataset ─────
+function mergePeriod(hours, sales) {
+  if (!hours && !sales) return null;
+  const map = new Map();
 
-function MetricCard({ metric, value, prev, active, onClick }) {
-  const numVal = parseFloat(String(value).replace(/[$,]/g, ''));
+  (hours?.employees || []).forEach(e => {
+    map.set(normalizeEmployeeName(e.name), {
+      name: e.name, hoursDecimal: e.hoursDecimal, hoursDisplay: e.hoursDisplay, serviceRevenue: null,
+    });
+  });
+  (sales?.employees || []).forEach(e => {
+    const key = normalizeEmployeeName(e.name);
+    const existing = map.get(key);
+    if (existing) existing.serviceRevenue = e.serviceRevenue;
+    else map.set(key, { name: e.name, hoursDecimal: null, hoursDisplay: null, serviceRevenue: e.serviceRevenue });
+  });
+
+  const employees = Array.from(map.values()).map(e => ({
+    ...e,
+    revPerHour: (e.hoursDecimal > 0 && e.serviceRevenue != null) ? e.serviceRevenue / e.hoursDecimal : null,
+  })).sort((a, b) => (b.serviceRevenue ?? -1) - (a.serviceRevenue ?? -1));
+
+  const hoursOnly = employees.filter(e => e.hoursDecimal != null && e.serviceRevenue == null).map(e => e.name);
+  const salesOnly = employees.filter(e => e.serviceRevenue != null && e.hoursDecimal == null).map(e => e.name);
+
+  const totalHours = hours ? hours.totalHoursDecimal : null;
+  const totalRevenue = sales ? sales.totalServiceRevenue : null;
+  const totalRevPerHour = (totalHours && totalRevenue != null && totalHours > 0) ? totalRevenue / totalHours : null;
+
+  return {
+    location: hours?.location || null,
+    totalHours,
+    totalHoursDisplay: hours?.totalHoursDisplay || null,
+    totalRevenue,
+    totalRevPerHour,
+    otherRevenue: sales?.otherRevenue || 0,
+    employees,
+    hoursOnly,
+    salesOnly,
+    hasHours: !!hours,
+    hasSales: !!sales,
+    complete: !!hours && !!sales,
+  };
+}
+
+// ─── Signature element: a balance scale that tips toward the more ──────────
+// ─── productive period (higher revenue per labor hour) ─────────────────────
+function BalanceScale({ leftLabel, rightLabel, leftValue, rightValue }) {
+  const lv = leftValue || 0;
+  const rv = rightValue || 0;
+  const maxV = Math.max(Math.abs(lv), Math.abs(rv), 1);
+  const angle = Math.max(-9, Math.min(9, ((rv - lv) / maxV) * 9));
+
   return (
-    <div className={`metric-card ${active ? 'metric-card-active' : ''}`} onClick={onClick} style={{ cursor: 'pointer' }}>
-      <p className="metric-label">{metric.label}</p>
-      <p className="metric-value">{value}</p>
-      <div className="metric-sub">
-        {prev != null && <Badge curr={numVal} prev={prev} />}
-        {active && <span className="active-hint">viewing ↓</span>}
+    <div className="balance">
+      <svg viewBox="0 0 320 150" className="balance-svg" aria-hidden="true">
+        <polygon points="150,142 170,142 160,116" className="balance-base" />
+        <rect x="146" y="140" width="28" height="6" rx="2" className="balance-foot" />
+        <line x1="160" y1="18" x2="160" y2="118" className="balance-post" />
+        <g style={{ transform: `rotate(${angle}deg)`, transformOrigin: '160px 32px' }} className="balance-beam-group">
+          <line x1="30" y1="32" x2="290" y2="32" className="balance-beam" />
+          <circle cx="160" cy="32" r="6" className="balance-hinge" />
+          <line x1="30" y1="32" x2="30" y2="62" className="balance-chain" />
+          <line x1="290" y1="32" x2="290" y2="62" className="balance-chain" />
+          <ellipse cx="30" cy="68" rx="27" ry="9" className="balance-pan" />
+          <ellipse cx="290" cy="68" rx="27" ry="9" className="balance-pan" />
+        </g>
+      </svg>
+      <div className="balance-labels">
+        <div className="balance-side">
+          <span className="balance-side-label">{leftLabel}</span>
+          <span className="balance-side-value">{fmtRate(leftValue)}</span>
+        </div>
+        <span className="balance-vs">vs</span>
+        <div className="balance-side">
+          <span className="balance-side-label">{rightLabel}</span>
+          <span className="balance-side-value">{fmtRate(rightValue)}</span>
+        </div>
+      </div>
+      <p className="balance-caption">Service revenue earned per labor hour</p>
+    </div>
+  );
+}
+
+// ─── Upload UI ──────────────────────────────────────────────────────────────
+function UploadSlot({ inputId, title, hint, accent, fileInfo, uploading, onFile }) {
+  return (
+    <label htmlFor={inputId} className={`upload-slot upload-slot--${accent} ${fileInfo ? 'upload-slot--filled' : ''}`}>
+      <input
+        id={inputId} type="file" accept=".xlsx,.xls,.csv"
+        onChange={e => { if (e.target.files[0]) onFile(e.target.files[0]); e.target.value = ''; }}
+        style={{ display: 'none' }}
+      />
+      <div className="upload-slot-icon">{uploading ? <span className="spinner small" /> : (fileInfo ? '✓' : '+')}</div>
+      <div className="upload-slot-body">
+        <p className="upload-slot-title">{title}</p>
+        {fileInfo ? (
+          <>
+            <p className="upload-slot-file">{fileInfo.fileName}</p>
+            <p className="upload-slot-sub">{fileInfo.sub}</p>
+            <span className="upload-slot-replace">Replace file</span>
+          </>
+        ) : (
+          <p className="upload-slot-hint">{hint}</p>
+        )}
+      </div>
+    </label>
+  );
+}
+
+function PeriodPanel({ periodKey, periodNum, period, uploadingSlot, onFile, onLabelChange }) {
+  const hours = period?.hours;
+  const sales = period?.sales;
+  return (
+    <div className="period-panel">
+      <div className="period-panel-head">
+        <span className="period-eyebrow">Period {periodNum}</span>
+        <input
+          className="period-label-input"
+          placeholder="Date range (fills in automatically)"
+          value={period?.label || ''}
+          onChange={e => onLabelChange(e.target.value)}
+        />
+      </div>
+      <div className="period-slots">
+        <UploadSlot
+          inputId={`${periodKey}-hours`}
+          title="Hours worked"
+          hint="Upload the attendance / hours export"
+          accent="steel"
+          uploading={uploadingSlot === 'hours'}
+          fileInfo={hours ? { fileName: hours.fileName, sub: `${hours.employees.length} employees · ${hours.totalHoursDisplay} total` } : null}
+          onFile={file => onFile('hours', file)}
+        />
+        <UploadSlot
+          inputId={`${periodKey}-sales`}
+          title="Service sales"
+          hint="Upload the sales / KPI export"
+          accent="sage"
+          uploading={uploadingSlot === 'sales'}
+          fileInfo={sales ? { fileName: sales.fileName, sub: `${sales.employees.length} employees · ${fmt$(sales.totalServiceRevenue)} total` } : null}
+          onFile={file => onFile('sales', file)}
+        />
       </div>
     </div>
   );
 }
 
-function StoreDataTab({ days }) {
-  const [activeMetric, setActiveMetric] = useState('revenue');
-  const [selectedDate, setSelectedDate] = useState(days[days.length - 1]?.date || '');
+// ─── Overview tab ───────────────────────────────────────────────────────────
+function PeriodSummaryCard({ label, data, deltaHours, deltaRevenue, deltaRate }) {
+  if (!data) {
+    return (
+      <div className="summary-card summary-card--empty">
+        <p className="period-name">{label}</p>
+        <p className="empty-note">No files uploaded yet</p>
+      </div>
+    );
+  }
+  return (
+    <div className="summary-card">
+      <p className="period-name">{label}</p>
+      <div className="summary-row">
+        <span className="summary-label">Hours worked</span>
+        <span className="summary-value">{data.totalHoursDisplay || '—'}</span>
+        {deltaHours != null && <Badge curr={data.totalHours} prev={data.totalHours - deltaHours} />}
+      </div>
+      <div className="summary-row">
+        <span className="summary-label">Service revenue</span>
+        <span className="summary-value">{data.totalRevenue != null ? fmt$(data.totalRevenue) : '—'}</span>
+        {deltaRevenue != null && <Badge curr={data.totalRevenue} prev={data.totalRevenue - deltaRevenue} />}
+      </div>
+      <div className="summary-row summary-row--highlight">
+        <span className="summary-label">Revenue / labor hour</span>
+        <span className="summary-value">{fmtRate(data.totalRevPerHour)}</span>
+        {deltaRate != null && <Badge curr={data.totalRevPerHour} prev={data.totalRevPerHour - deltaRate} />}
+      </div>
+      {!data.complete && (
+        <p className="summary-warn">⚠ still missing the {data.hasHours ? 'sales' : 'hours'} file for this period</p>
+      )}
+    </div>
+  );
+}
 
-  const dayIndex = days.findIndex(d => d.date === selectedDate);
-  const day  = days[dayIndex] || days[days.length - 1];
-  const prev = dayIndex > 0 ? days[dayIndex - 1] : null;
-
-  const stores = day?.stores || {};
-  const names  = Object.keys(stores).sort((a, b) => (stores[b][activeMetric] ?? 0) - (stores[a][activeMetric] ?? 0));
-  const isCurrency = activeMetric !== 'cuts';
-  const activeM    = METRICS.find(m => m.key === activeMetric);
-  const chartVals  = names.map(n => Math.round(stores[n][activeMetric] ?? 0));
-
-  const storeChartData = {
-    labels: names,
-    datasets: [{ data: chartVals, backgroundColor: names.map((_, i) => i === 0 ? '#c8f04a' : 'rgba(200,240,74,0.25)'), borderRadius: 4, borderSkipped: false }]
-  };
-  const storeChartOpts = {
-    indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-    plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ' ' + (isCurrency ? fmt$(ctx.parsed.x) : ctx.parsed.x) } } },
-    scales: {
-      x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#666', callback: v => isCurrency ? fmt$(v) : v, font: { size: 11, family: 'DM Mono' } } },
-      y: { grid: { display: false }, ticks: { color: '#ccc', font: { size: 12, family: 'Syne' } } }
-    }
-  };
+function OverviewTab({ p1, p2, label1, label2 }) {
+  const deltaHours = (p1?.totalHours != null && p2?.totalHours != null) ? p2.totalHours - p1.totalHours : null;
+  const deltaRevenue = (p1?.totalRevenue != null && p2?.totalRevenue != null) ? p2.totalRevenue - p1.totalRevenue : null;
+  const deltaRate = (p1?.totalRevPerHour != null && p2?.totalRevPerHour != null) ? p2.totalRevPerHour - p1.totalRevPerHour : null;
 
   return (
     <div className="tab-content">
-      <div className="date-selector-row">
-        <p className="section-label" style={{ margin: 0 }}>Viewing</p>
-        <select className="date-select" value={selectedDate} onChange={e => setSelectedDate(e.target.value)}>
-          {[...days].reverse().map(d => (
-            <option key={d.date} value={d.date}>{getDayOfWeek(d.date)}, {normalizeDate(d.date)}</option>
-          ))}
+      <BalanceScale leftLabel={label1} rightLabel={label2} leftValue={p1?.totalRevPerHour} rightValue={p2?.totalRevPerHour} />
+      {deltaRate != null && p1?.totalRevPerHour > 0 && (
+        <p className="narrative">
+          <strong>{label2}</strong> ran {' '}
+          <strong>{fmt$(Math.abs(deltaRate))}/hr {deltaRate >= 0 ? 'more' : 'less'}</strong> productive than <strong>{label1}</strong>
+          {' — a '}<strong>{Math.abs((deltaRate / p1.totalRevPerHour) * 100).toFixed(1)}%</strong> {deltaRate >= 0 ? 'improvement' : 'decline'} in sales generated per hour of labor.
+        </p>
+      )}
+      <div className="period-compare-grid">
+        <PeriodSummaryCard label={label1} data={p1} />
+        <PeriodSummaryCard label={label2} data={p2} deltaHours={deltaHours} deltaRevenue={deltaRevenue} deltaRate={deltaRate} />
+      </div>
+    </div>
+  );
+}
+
+// ─── Employees tab ──────────────────────────────────────────────────────────
+function buildComparisonRows(p1, p2) {
+  const map = new Map();
+  (p1?.employees || []).forEach(e => {
+    map.set(normalizeEmployeeName(e.name), { name: e.name, p1: e, p2: null });
+  });
+  (p2?.employees || []).forEach(e => {
+    const key = normalizeEmployeeName(e.name);
+    const existing = map.get(key);
+    if (existing) existing.p2 = e;
+    else map.set(key, { name: e.name, p1: null, p2: e });
+  });
+  return Array.from(map.values());
+}
+
+function EmployeesTab({ p1, p2, label1, label2 }) {
+  const [sortBy, setSortBy] = useState('delta');
+  const rows = useMemo(() => buildComparisonRows(p1, p2), [p1, p2]);
+
+  const sorted = useMemo(() => {
+    const arr = [...rows];
+    if (sortBy === 'delta') {
+      arr.sort((a, b) => {
+        const da = (a.p2?.revPerHour ?? -Infinity) - (a.p1?.revPerHour ?? -Infinity);
+        const db = (b.p2?.revPerHour ?? -Infinity) - (b.p1?.revPerHour ?? -Infinity);
+        return (isFinite(db) ? db : -999) - (isFinite(da) ? da : -999);
+      });
+    } else if (sortBy === 'revenue') {
+      arr.sort((a, b) => ((b.p1?.serviceRevenue || 0) + (b.p2?.serviceRevenue || 0)) - ((a.p1?.serviceRevenue || 0) + (a.p2?.serviceRevenue || 0)));
+    } else {
+      arr.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return arr;
+  }, [rows, sortBy]);
+
+  const chartRows = useMemo(() => (
+    [...rows]
+      .filter(r => r.p1?.revPerHour != null || r.p2?.revPerHour != null)
+      .sort((a, b) => ((b.p1?.serviceRevenue || 0) + (b.p2?.serviceRevenue || 0)) - ((a.p1?.serviceRevenue || 0) + (a.p2?.serviceRevenue || 0)))
+      .slice(0, 12)
+  ), [rows]);
+
+  const chartData = {
+    labels: chartRows.map(r => r.name),
+    datasets: [
+      { label: label1, data: chartRows.map(r => r.p1?.revPerHour != null ? Math.round(r.p1.revPerHour * 100) / 100 : null), backgroundColor: '#4B6C87', borderRadius: 4 },
+      { label: label2, data: chartRows.map(r => r.p2?.revPerHour != null ? Math.round(r.p2.revPerHour * 100) / 100 : null), backgroundColor: '#5C7A63', borderRadius: 4 },
+    ],
+  };
+  const chartOpts = {
+    indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { position: 'top', labels: { color: '#5b6270', font: { size: 11, family: 'Work Sans' }, boxWidth: 12 } },
+      tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmtRate(ctx.parsed.x)}` } },
+    },
+    scales: {
+      x: { grid: { color: 'rgba(35,40,47,0.06)' }, ticks: { color: '#5b6270', callback: v => '$' + v, font: { size: 10, family: 'IBM Plex Mono' } } },
+      y: { grid: { display: false }, ticks: { color: '#23282f', font: { size: 11, family: 'Work Sans' } } },
+    },
+  };
+
+  const unmatched = [
+    ...(p1?.hoursOnly || []).map(n => `${n} (${label1}: hours logged, no matching sales record)`),
+    ...(p1?.salesOnly || []).map(n => `${n} (${label1}: sales logged, no matching hours record)`),
+    ...(p2?.hoursOnly || []).map(n => `${n} (${label2}: hours logged, no matching sales record)`),
+    ...(p2?.salesOnly || []).map(n => `${n} (${label2}: sales logged, no matching hours record)`),
+  ];
+
+  if (!rows.length) {
+    return <div className="empty-state"><p className="empty-title">No employees yet</p><p>Upload at least one hours or sales file to see this table.</p></div>;
+  }
+
+  return (
+    <div className="tab-content">
+      {chartRows.length > 0 && (
+        <div className="chart-card">
+          <p className="chart-title">Revenue per labor hour, by employee</p>
+          <div style={{ height: Math.max(220, chartRows.length * 34 + 60) }}>
+            <Bar data={chartData} options={chartOpts} />
+          </div>
+        </div>
+      )}
+
+      <div className="ledger-head-row">
+        <p className="section-label" style={{ margin: 0 }}>Full comparison</p>
+        <select className="sort-select" value={sortBy} onChange={e => setSortBy(e.target.value)}>
+          <option value="delta">Sort: biggest change in $/hr</option>
+          <option value="revenue">Sort: total revenue</option>
+          <option value="name">Sort: name</option>
         </select>
       </div>
-      <div className="narrative">
-        <span className="narrative-date">{formatDisplayDate(day.date)}</span>
-        {' — '}Net Sales <strong>{fmt$(day.revenue)}</strong> across <strong>{day.cuts}</strong> haircuts.
-        {day.tsth > 0 && <> Avg TSTH <strong>{fmt$(day.tsth)}</strong>.</>}
-        {day.productNet > 0 && <> Product Net <strong>{fmt$(day.productNet)}</strong>.</>}
-        {day.colorNet > 0 && <> Color Net <strong>{fmt$(day.colorNet)}</strong>.</>}
-        {names[0] && <> Top store: <strong>{names[0]}</strong>.</>}
-        {prev && (() => { const diff = day.revenue - prev.revenue; const pct = Math.abs((diff/(prev.revenue||1))*100).toFixed(1); return <> Net Sales {diff>=0?'up':'down'} <strong>{pct}%</strong> vs prior day.</>; })()}
+
+      <div className="ledger-scroll">
+        <table className="ledger-table">
+          <thead>
+            <tr>
+              <th className="ledger-name-col">Employee</th>
+              <th colSpan={3} className="ledger-group-head ledger-group-head--steel">{label1}</th>
+              <th colSpan={3} className="ledger-group-head ledger-group-head--sage">{label2}</th>
+              <th>Δ $/hr</th>
+            </tr>
+            <tr className="ledger-subhead">
+              <th></th>
+              <th>Hours</th><th>Revenue</th><th>$/hr</th>
+              <th>Hours</th><th>Revenue</th><th>$/hr</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map(r => {
+              const delta = (r.p1?.revPerHour != null && r.p2?.revPerHour != null) ? r.p2.revPerHour - r.p1.revPerHour : null;
+              return (
+                <tr key={r.name}>
+                  <td className="ledger-name-col">{r.name}</td>
+                  <td>{r.p1?.hoursDisplay || '—'}</td>
+                  <td>{r.p1?.serviceRevenue != null ? fmt$(r.p1.serviceRevenue) : '—'}</td>
+                  <td className="ledger-rate">{fmtRate(r.p1?.revPerHour)}</td>
+                  <td>{r.p2?.hoursDisplay || '—'}</td>
+                  <td>{r.p2?.serviceRevenue != null ? fmt$(r.p2.serviceRevenue) : '—'}</td>
+                  <td className="ledger-rate">{fmtRate(r.p2?.revPerHour)}</td>
+                  <td>{delta != null ? <Badge curr={r.p2.revPerHour} prev={r.p1.revPerHour} /> : '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
-      <div className="metric-row">
-        {METRICS.map(m => (
-          <MetricCard key={m.key} metric={m} value={m.fmt(day[m.key]??0)} prev={prev ? (prev[m.key] ?? null) : null} active={activeMetric===m.key} onClick={()=>setActiveMetric(m.key)} />
-        ))}
-      </div>
-      {names.length > 0 && (
-        <div className="chart-card">
-          <p className="chart-title">{activeM.label} by store</p>
-          <div style={{ height: Math.max(220, names.length * 42 + 60) }}>
-            <Bar data={storeChartData} options={storeChartOpts} />
-          </div>
+
+      {(p1?.otherRevenue > 0 || p2?.otherRevenue > 0) && (
+        <p className="ledger-footnote">
+          House / unattributed sales not tied to a specific employee — {label1}: {fmt$(p1?.otherRevenue || 0)}, {label2}: {fmt$(p2?.otherRevenue || 0)}.
+        </p>
+      )}
+
+      {unmatched.length > 0 && (
+        <div className="unmatched-box">
+          <p className="unmatched-title">⚠ {unmatched.length} name{unmatched.length > 1 ? 's' : ''} only appear in one file</p>
+          <p className="unmatched-hint">Usually a spelling difference between the two reports. Check these names:</p>
+          <ul>{unmatched.map((u, i) => <li key={i}>{u}</li>)}</ul>
         </div>
       )}
     </div>
   );
 }
 
-function TrendsTab({ days }) {
-  const [range, setRange]       = useState('14');
-  const [contribPct, setContribPct] = useState('20');
-  const filtered = range === 'all' ? days : days.slice(-parseInt(range));
-
-  const now       = new Date();
-  const thisMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-  const monthDays = days.filter(d => getYearMonth(d.date) === thisMonth);
-  const monthRev  = monthDays.reduce((s,d) => s+(d.revenue??0), 0);
-  const pct       = parseFloat(contribPct) || 0;
-  const contribEst    = monthRev * (pct/100);
-  const daysInMonth   = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
-  const remainingDays = daysInMonth - now.getDate();
-  const avgDaily      = monthDays.length > 0 ? monthRev / monthDays.length : 0;
-  const projectedRev  = monthRev + (avgDaily * remainingDays);
-  const projContrib   = projectedRev * (pct/100);
-
-  if (filtered.length < 2) return <div className="empty-state"><p className="empty-title">Not enough data yet</p><p>Upload at least 2 days.</p></div>;
-
-  const labels = filtered.map(d => normalizeDate(d.date).slice(5));
-  const lineOpts = {
-    responsive: true, maintainAspectRatio: false,
-    plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ' '+fmt$(ctx.parsed.y) } } },
-    scales: { x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#666', font: { size: 10, family: 'DM Mono' }, maxTicksLimit: 10 } }, y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#666', callback: v => fmt$(v), font: { size: 10, family: 'DM Mono' } } } }
-  };
-  const barOpts = {
-    responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-    scales: { x: { grid: { display: false }, ticks: { color: '#666', font: { size: 10, family: 'DM Mono' }, maxTicksLimit: 10 } }, y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#666', font: { size: 10 }, stepSize: 1 } } }
-  };
-
-  const totalRev   = filtered.reduce((s,d)=>s+(d.revenue??0),0);
-  const avgCuts    = Math.round(filtered.reduce((s,d)=>s+(d.cuts??0),0)/filtered.length);
-  const avgTsth    = filtered.reduce((s,d)=>s+(d.tsth??0),0)/filtered.length;
-  const totalProd  = filtered.reduce((s,d)=>s+(d.productNet??0),0);
-  const totalColor = filtered.reduce((s,d)=>s+(d.colorNet??0),0);
-  const best       = filtered.reduce((a,b)=>(b.revenue??0)>(a.revenue??0)?b:a);
-
-  return (
-    <div className="tab-content">
-      <div className="trends-header">
-        <p className="section-label">Performance over time</p>
-        <select value={range} onChange={e=>setRange(e.target.value)} className="range-select">
-          <option value="7">Last 7 days</option><option value="14">Last 14 days</option>
-          <option value="30">Last 30 days</option><option value="all">All time</option>
-        </select>
-      </div>
-      <div className="chart-card">
-        <p className="chart-title">Daily net sales</p>
-        <div style={{height:200}}><Line data={{labels,datasets:[{data:filtered.map(d=>Math.round(d.revenue??0)),borderColor:'#c8f04a',backgroundColor:'rgba(200,240,74,0.08)',fill:true,tension:0.35,pointRadius:3,pointBackgroundColor:'#c8f04a'}]}} options={lineOpts}/></div>
-      </div>
-      <div className="chart-row">
-        <div className="chart-card"><p className="chart-title">Haircuts / day</p><div style={{height:160}}><Bar data={{labels,datasets:[{data:filtered.map(d=>d.cuts??0),backgroundColor:'rgba(200,240,74,0.4)',borderRadius:3}]}} options={barOpts}/></div></div>
-        <div className="chart-card"><p className="chart-title">Avg TSTH / day</p><div style={{height:160}}><Line data={{labels,datasets:[{data:filtered.map(d=>Math.round((d.tsth??0)*100)/100),borderColor:'#7eb8f7',backgroundColor:'rgba(126,184,247,0.08)',fill:true,tension:0.35,pointRadius:3,pointBackgroundColor:'#7eb8f7'}]}} options={lineOpts}/></div></div>
-        <div className="chart-card"><p className="chart-title">Product Net / day</p><div style={{height:160}}><Line data={{labels,datasets:[{data:filtered.map(d=>Math.round(d.productNet??0)),borderColor:'#f7a97e',backgroundColor:'rgba(247,169,126,0.08)',fill:true,tension:0.35,pointRadius:3,pointBackgroundColor:'#f7a97e'}]}} options={lineOpts}/></div></div>
-        <div className="chart-card"><p className="chart-title">Color Net / day</p><div style={{height:160}}><Line data={{labels,datasets:[{data:filtered.map(d=>Math.round(d.colorNet??0)),borderColor:'#c47ef7',backgroundColor:'rgba(196,126,247,0.08)',fill:true,tension:0.35,pointRadius:3,pointBackgroundColor:'#c47ef7'}]}} options={lineOpts}/></div></div>
-      </div>
-      <div className="summary-grid">
-        <div className="summary-card"><p className="metric-label">Period net sales</p><p className="metric-value">{fmt$(Math.round(totalRev))}</p><p className="metric-sub"><span>{filtered.length} days</span></p></div>
-        <div className="summary-card"><p className="metric-label">Avg haircuts / day</p><p className="metric-value">{avgCuts}</p></div>
-        <div className="summary-card"><p className="metric-label">Avg TSTH</p><p className="metric-value">{fmt$(Math.round(avgTsth*100)/100)}</p></div>
-        <div className="summary-card"><p className="metric-label">Product Net</p><p className="metric-value">{fmt$(Math.round(totalProd))}</p></div>
-        <div className="summary-card"><p className="metric-label">Color Net</p><p className="metric-value">{fmt$(Math.round(totalColor))}</p></div>
-        <div className="summary-card"><p className="metric-label">Best day</p><p className="metric-value" style={{fontSize:18}}>{fmt$(Math.round(best.revenue??0))}</p><p className="metric-sub"><span>{normalizeDate(best.date)}</span></p></div>
-      </div>
-      <div className="contrib-card">
-        <div className="contrib-header">
-          <p className="chart-title" style={{margin:0}}>Contribution Est — {thisMonth}</p>
-          <div className="contrib-pct-row">
-            <span className="contrib-pct-label">Contribution %</span>
-            <input className="contrib-pct-input" type="number" min="1" max="100" value={contribPct} onChange={e=>setContribPct(e.target.value)}/>
-            <span className="contrib-pct-symbol">%</span>
-          </div>
-        </div>
-        {monthDays.length === 0 ? (
-          <p className="contrib-empty">No data for {thisMonth} yet. Upload files from this month to see estimates.</p>
-        ) : (
-          <div className="contrib-grid">
-            <div className="contrib-item"><p className="metric-label">Month net sales so far</p><p className="metric-value">{fmt$(Math.round(monthRev))}</p><p className="metric-sub"><span>{monthDays.length} days uploaded</span></p></div>
-            <div className="contrib-item"><p className="metric-label">Contribution est (actual)</p><p className="metric-value contrib-value">{fmt$(Math.round(contribEst))}</p><p className="metric-sub"><span>{pct}% of {fmt$(Math.round(monthRev))}</span></p></div>
-            <div className="contrib-item"><p className="metric-label">Projected month-end</p><p className="metric-value">{fmt$(Math.round(projectedRev))}</p><p className="metric-sub"><span>{fmt$(Math.round(avgDaily))}/day × {remainingDays} days left</span></p></div>
-            <div className="contrib-item"><p className="metric-label">Projected contribution</p><p className="metric-value contrib-value">{fmt$(Math.round(projContrib))}</p><p className="metric-sub"><span>{pct}% of projected</span></p></div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function HistoryTab({ days }) {
-  if (!days.length) return <div className="empty-state"><p>No history yet.</p></div>;
-  return (
-    <div className="tab-content">
-      <div className="history-list">
-        {[...days].reverse().map(d => (
-          <div key={d.date} className="history-row">
-            <div className="history-date-col">
-              <span className="history-date">{normalizeDate(d.date)}</span>
-              <span className="history-dow">{getDayOfWeek(d.date)}</span>
-            </div>
-            <span className="history-stat">{d.cuts} cuts</span>
-            <span className="history-rev">{fmt$(d.revenue)}</span>
-            <span className="history-tsth">TSTH {fmt$(d.tsth)}</span>
-            <span className="history-tsth">Prod {fmt$(d.productNet??0)}</span>
-            <span className="history-tsth">Color {fmt$(d.colorNet??0)}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ─── Chatbot ────────────────────────────────────────────────────────────────
-
-function buildDataSummary(days) {
-  if (!days.length) return 'No data uploaded yet.';
-  const lines = [];
-  days.forEach(d => {
-    const norm = normalizeDate(d.date);
-    const dow  = getDayOfWeek(d.date);
-    lines.push(`Date: ${norm} (${dow}) | Net Sales: $${d.revenue} | Haircuts: ${d.cuts} | TSTH: $${d.tsth} | Product Net: $${d.productNet??0} | Color Net: $${d.colorNet??0}`);
-    const stores = d.stores || {};
-    Object.entries(stores).forEach(([name, s]) => {
-      lines.push(`  Store: ${name} | Net Sales: $${s.revenue} | Haircuts: ${s.cuts} | Product Net: $${s.productNet??0} | Color Net: $${s.colorNet??0}`);
-    });
-  });
-  return lines.join('\n');
-}
-
-function ChatBot({ days }) {
-  const [messages, setMessages] = useState([
-    { role: 'assistant', text: "Hi! Ask me anything about your store data — like \"who sold the most retail last Monday\" or \"what was my best day this month\"." }
-  ]);
-  const [input, setInput]   = useState('');
-  const [loading, setLoading] = useState(false);
-  const bottomRef = useRef();
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, loading]);
-
-  const send = async () => {
-    const q = input.trim();
-    if (!q || loading) return;
-    setInput('');
-    setMessages(prev => [...prev, { role: 'user', text: q }]);
-    setLoading(true);
-
-    try {
-      const dataSummary = buildDataSummary(days);
-      const systemPrompt = `You are a helpful store analytics assistant for a hair salon business. You have access to daily sales data shown below. Answer questions clearly and concisely. When referencing dollar amounts use $ formatting. When asked about specific stores, days of the week, or date ranges, look through the data carefully.\n\nDATA:\n${dataSummary}`;
-
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1000,
-          system: systemPrompt,
-          messages: [
-            ...messages.filter(m => m.role !== 'assistant' || messages.indexOf(m) > 0).map(m => ({ role: m.role, content: m.text })),
-            { role: 'user', content: q }
-          ]
-        })
-      });
-
-      const data = await res.json();
-      const text = data.content?.map(c => c.text || '').join('') || 'Sorry, I could not get a response.';
-      setMessages(prev => [...prev, { role: 'assistant', text }]);
-    } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', text: 'Something went wrong. Please try again.' }]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="tab-content chatbot-wrap">
-      <div className="chat-messages">
-        {messages.map((m, i) => (
-          <div key={i} className={`chat-bubble ${m.role}`}>
-            <p>{m.text}</p>
-          </div>
-        ))}
-        {loading && <div className="chat-bubble assistant"><p className="chat-thinking">Thinking<span className="dots">...</span></p></div>}
-        <div ref={bottomRef} />
-      </div>
-      <div className="chat-input-row">
-        <input
-          className="chat-input"
-          placeholder="Ask about your data..."
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && send()}
-        />
-        <button className="chat-send" onClick={send} disabled={loading || !input.trim()}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function SetupTab() {
+// ─── Setup tab ──────────────────────────────────────────────────────────────
+function SetupTab({ configured }) {
+  const steps = [
+    { n: 1, title: 'Export your two hours reports', body: 'From your scheduling/POS system, run the attendance (hours) report for each period you want to compare — e.g. this week and last week.' },
+    { n: 2, title: 'Export your two sales reports', body: 'Run the service-sales (KPI) report for the exact same two date ranges. The Service Revenue column is the one this app reads.' },
+    { n: 3, title: 'Upload all four files', body: 'Tap + on each of the four slots above: Hours and Sales for Period 1, then Hours and Sales for Period 2. The date range label fills in automatically from the file.' },
+    { n: 4, title: 'Read the comparison', body: 'Overview shows total productivity (revenue per labor hour) for each period. Employees shows the same breakdown per person, so you can see who got more efficient and who didn\u2019t.' },
+    { n: 5, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
+  ];
   return (
     <div className="tab-content setup-tab">
+      <div className={`setup-status ${configured ? 'setup-status--ok' : 'setup-status--warn'}`}>
+        {configured
+          ? '✓ Connected to Supabase — your data syncs across devices.'
+          : '⚠ Supabase not connected — data is only saved on this device. See below to enable cross-device sync.'}
+      </div>
       <div className="setup-section">
-        {[
-          { n: 1, title: 'Set up your Zenoti export', body: 'In Zenoti, go to Reports → Daily Sales Summary. Schedule an automated daily email in Excel format to a dedicated inbox.' },
-          { n: 2, title: 'Upload each morning', body: 'Download the Excel attachment from your email and tap Upload. The last row (grand total) and leading numbers on store names are handled automatically.' },
-          { n: 3, title: 'Use the chatbot', body: 'Tap the Chat tab and ask questions like "who sold the most retail on Monday" or "what was my best day this month." It reads all your uploaded data.' },
-          { n: 4, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
-        ].map(s => (
+        {steps.map(s => (
           <div key={s.n} className="setup-step">
             <div className="step-num">{s.n}</div>
             <div><p className="step-title">{s.title}</p><p className="step-body">{s.body}</p></div>
           </div>
         ))}
       </div>
+      {!configured && (
+        <div className="setup-sql-card">
+          <p className="chart-title">One-time Supabase setup</p>
+          <p className="step-body">Create a table called <code>periods</code> by running this in the Supabase SQL Editor:</p>
+          <pre className="setup-sql">{`create table periods (
+  period_id text primary key,
+  payload jsonb not null,
+  updated_at timestamp with time zone default now()
+);`}</pre>
+          <p className="step-body">Then add <code>REACT_APP_SUPABASE_URL</code> and <code>REACT_APP_SUPABASE_ANON_KEY</code> as environment variables in Vercel, using the values from Supabase → Settings → API.</p>
+        </div>
+      )}
     </div>
   );
 }
 
-const TABS = ['Store Data', 'Trends', 'History', 'Chat', 'Setup'];
+// ─── App ────────────────────────────────────────────────────────────────────
+const TABS = ['Overview', 'Employees', 'Setup'];
+const emptyPeriod = { label: '', hours: null, sales: null };
 
 export default function App() {
-  const [days, setDays]           = useState([]);
-  const [tab, setTab]             = useState('Store Data');
-  const [loading, setLoading]     = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const [toast, setToast]         = useState(null);
-  const [colMap, setColMap]       = useState(null);
+  const [periods, setPeriods] = useState({ period1: emptyPeriod, period2: emptyPeriod });
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState('Overview');
+  const [toast, setToast] = useState(null);
+  const [uploadingSlot, setUploadingSlot] = useState({}); // { period1: 'hours'|'sales'|null, ... }
+  const [panelOpen, setPanelOpen] = useState(true);
 
   useEffect(() => {
-    loadDays().then(d => { setDays(d); setLoading(false); }).catch(() => setLoading(false));
+    loadPeriods().then(saved => {
+      setPeriods({
+        period1: { ...emptyPeriod, ...(saved.period1 || {}) },
+        period2: { ...emptyPeriod, ...(saved.period2 || {}) },
+      });
+      setLoading(false);
+    }).catch(() => setLoading(false));
   }, []);
 
   const showToast = (msg, type = 'success') => {
@@ -380,98 +443,112 @@ export default function App() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  const handleFile = useCallback(async file => {
-    setUploading(true);
+  const handleFile = useCallback(async (periodKey, kind, file) => {
+    setUploadingSlot(prev => ({ ...prev, [periodKey]: kind }));
     try {
-      const entry = await parseFile(file);
-      await saveDay(entry);
-      setDays(prev => {
-        const next = [...prev.filter(d => d.date !== entry.date), entry];
-        next.sort((a,b) => normalizeDate(a.date).localeCompare(normalizeDate(b.date)));
-        return next;
+      const parsed = kind === 'hours' ? await parseHoursFile(file) : await parseSalesFile(file);
+      setPeriods(prev => {
+        const cur = prev[periodKey] || emptyPeriod;
+        const next = { ...cur, [kind]: parsed };
+        if (!cur.label && parsed.dateRangeLabel) next.label = parsed.dateRangeLabel;
+        savePeriod(periodKey, next);
+        return { ...prev, [periodKey]: next };
       });
-      setColMap(entry.detectedCols);
-      setTab('Store Data');
-      showToast(`Loaded ${entry.date} — ${Object.keys(entry.stores).length} stores`);
+      showToast(`Loaded ${file.name} — ${parsed.employees.length} employees found`);
     } catch (err) {
       showToast(err.message, 'error');
     } finally {
-      setUploading(false);
+      setUploadingSlot(prev => ({ ...prev, [periodKey]: null }));
     }
   }, []);
 
-  const handleClear = async () => {
-    if (!window.confirm('Clear all stored data? This cannot be undone.')) return;
-    await clearDays();
-    setDays([]);
-    setColMap(null);
+  const handleLabelChange = useCallback((periodKey, text) => {
+    setPeriods(prev => {
+      const next = { ...prev[periodKey], label: text };
+      savePeriod(periodKey, next);
+      return { ...prev, [periodKey]: next };
+    });
+  }, []);
+
+  const handleClearAll = async () => {
+    if (!window.confirm('Clear all four files and start over? This cannot be undone.')) return;
+    await clearPeriods();
+    setPeriods({ period1: emptyPeriod, period2: emptyPeriod });
+    setPanelOpen(true);
     showToast('All data cleared');
   };
 
-  if (loading) return <div className="app-loading"><div className="spinner large"/></div>;
+  const merged1 = useMemo(() => mergePeriod(periods.period1?.hours, periods.period1?.sales), [periods.period1]);
+  const merged2 = useMemo(() => mergePeriod(periods.period2?.hours, periods.period2?.sales), [periods.period2]);
+  const label1 = periods.period1?.label || 'Period 1';
+  const label2 = periods.period2?.label || 'Period 2';
+  const hasAnyData = !!(periods.period1?.hours || periods.period1?.sales || periods.period2?.hours || periods.period2?.sales);
+  const bothComplete = merged1?.complete && merged2?.complete;
 
-  const hasData = days.length > 0;
+  if (loading) return <div className="app-loading"><div className="spinner large" /></div>;
 
   return (
     <div className="app">
       {toast && <div className={`toast toast-${toast.type}`}>{toast.msg}</div>}
+
       <header className="app-header">
         <div className="header-left">
-          <h1 className="app-title">Store Analytics</h1>
-          {!isConfigured() && <span className="local-badge">local</span>}
+          <h1 className="app-title">Time &amp; Till</h1>
+          <p className="app-subtitle">
+            {merged1?.location || merged2?.location || 'Labor hours vs. service sales, side by side'}
+          </p>
         </div>
         <div className="header-right">
-          {hasData && <button className="btn-ghost" onClick={handleClear}>Clear</button>}
-          <label className="btn-upload">
-            {uploading ? <span className="spinner small"/> : '+ Upload'}
-            <input type="file" accept=".xlsx,.xls,.csv" onChange={e => { if(e.target.files[0]) handleFile(e.target.files[0]); e.target.value=''; }} style={{display:'none'}}/>
-          </label>
+          {hasAnyData && <button className="btn-ghost" onClick={handleClearAll}>Clear all</button>}
         </div>
       </header>
 
-      {colMap && (
-        <div className="col-map-bar">
-          <span>Detected — </span>
-          {colMap.storeCol      && <span>Store: <strong>{colMap.storeCol}</strong></span>}
-          {colMap.revCol        && <span>Net Sales: <strong>{colMap.revCol}</strong></span>}
-          {colMap.cutsCol       && <span>Haircuts: <strong>{colMap.cutsCol}</strong></span>}
-          {colMap.tsthCol       && <span>TSTH: <strong>{colMap.tsthCol}</strong></span>}
-          {colMap.productNetCol && <span>Product Net: <strong>{colMap.productNetCol}</strong></span>}
-          {colMap.colorNetCol   && <span>Color Net: <strong>{colMap.colorNetCol}</strong></span>}
-        </div>
+      {(!bothComplete || panelOpen) && (
+        <section className="upload-center">
+          <div className="upload-center-grid">
+            <PeriodPanel
+              periodKey="period1" periodNum="1" period={periods.period1}
+              uploadingSlot={uploadingSlot.period1}
+              onFile={(kind, file) => handleFile('period1', kind, file)}
+              onLabelChange={text => handleLabelChange('period1', text)}
+            />
+            <PeriodPanel
+              periodKey="period2" periodNum="2" period={periods.period2}
+              uploadingSlot={uploadingSlot.period2}
+              onFile={(kind, file) => handleFile('period2', kind, file)}
+              onLabelChange={text => handleLabelChange('period2', text)}
+            />
+          </div>
+          {bothComplete && (
+            <button className="btn-ghost btn-collapse" onClick={() => setPanelOpen(false)}>Hide file panel ↑</button>
+          )}
+        </section>
       )}
 
-      <nav className="tab-nav">
-        {TABS.map(t => (
-          <button key={t} className={`tab-btn ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t}</button>
-        ))}
-      </nav>
+      {bothComplete && !panelOpen && (
+        <button className="manage-files-bar" onClick={() => setPanelOpen(true)}>
+          Manage the 4 uploaded files ↓
+        </button>
+      )}
 
-      <main className="app-main">
-        {!hasData && tab !== 'Setup' && tab !== 'Chat' ? (
-          <div className="welcome">
-            <div className="upload-zone" onClick={() => document.getElementById('main-upload').click()}>
-              <div className="upload-icon">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-                </svg>
-              </div>
-              <p className="upload-title">{uploading ? 'Processing...' : 'Upload daily file'}</p>
-              <p className="upload-sub">Click or drag your Zenoti Excel export here</p>
-              <input id="main-upload" type="file" accept=".xlsx,.xls,.csv" onChange={e => { if(e.target.files[0]) handleFile(e.target.files[0]); e.target.value=''; }} style={{display:'none'}}/>
-            </div>
-            <p className="welcome-hint">or <button className="link-btn" onClick={()=>setTab('Setup')}>read the setup guide</button></p>
-          </div>
-        ) : (
-          <>
-            {tab==='Store Data' && <StoreDataTab days={days}/>}
-            {tab==='Trends'     && <TrendsTab    days={days}/>}
-            {tab==='History'    && <HistoryTab   days={days}/>}
-            {tab==='Chat'       && <ChatBot      days={days}/>}
-            {tab==='Setup'      && <SetupTab/>}
-          </>
-        )}
-      </main>
+      {hasAnyData ? (
+        <>
+          <nav className="tab-nav">
+            {TABS.map(t => (
+              <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>{t}</button>
+            ))}
+          </nav>
+          <main className="app-main">
+            {tab === 'Overview' && <OverviewTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
+            {tab === 'Employees' && <EmployeesTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
+            {tab === 'Setup' && <SetupTab configured={isConfigured()} />}
+          </main>
+        </>
+      ) : (
+        <main className="app-main">
+          <SetupTab configured={isConfigured()} />
+        </main>
+      )}
     </div>
   );
 }

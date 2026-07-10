@@ -1,6 +1,6 @@
 {
-  "short_name": "Store Analytics",
-  "name": "Zenoti Store Analytics",
+  "short_name": "Time & Till",
+  "name": "Time & Till \u2014 Labor vs Sales",
   "icons": [
     {
       "src": "icon-192.png",
@@ -17,7 +17,7 @@
   ],
   "start_url": "/",
   "display": "standalone",
-  "theme_color": "#0f1117",
-  "background_color": "#0f1117",
+  "theme_color": "#23282F",
+  "background_color": "#EFE8D6",
   "orientation": "portrait-primary"
 }
