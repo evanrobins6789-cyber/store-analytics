@@ -7,6 +7,7 @@ import {
 import { loadPeriods, savePeriod, clearPeriods, isConfigured } from './db';
 import { parseHoursFile, parseSalesFile, normalizeEmployeeName } from './parser';
 import { STORE_ROSTER } from './storeRoster';
+import { getHourlyRate, laborCost } from './hourlyRates';
 import './App.css';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
@@ -239,6 +240,29 @@ function OverviewTab({ p1, p2, label1, label2 }) {
   );
 }
 
+// ─── Shared row sorting (used by both Employee Performance and By Store) ───
+function sortComparisonRows(rows, sortBy) {
+  const arr = [...rows];
+  if (sortBy === 'delta') {
+    arr.sort((a, b) => {
+      const da = (a.p2?.revPerHour ?? -Infinity) - (a.p1?.revPerHour ?? -Infinity);
+      const db = (b.p2?.revPerHour ?? -Infinity) - (b.p1?.revPerHour ?? -Infinity);
+      return (isFinite(db) ? db : -999) - (isFinite(da) ? da : -999);
+    });
+  } else if (sortBy === 'tsth') {
+    arr.sort((a, b) => {
+      const ta = Math.max(a.p1?.revPerHour ?? -Infinity, a.p2?.revPerHour ?? -Infinity);
+      const tb = Math.max(b.p1?.revPerHour ?? -Infinity, b.p2?.revPerHour ?? -Infinity);
+      return (isFinite(tb) ? tb : -999) - (isFinite(ta) ? ta : -999);
+    });
+  } else if (sortBy === 'revenue') {
+    arr.sort((a, b) => ((b.p1?.serviceRevenue || 0) + (b.p2?.serviceRevenue || 0)) - ((a.p1?.serviceRevenue || 0) + (a.p2?.serviceRevenue || 0)));
+  } else {
+    arr.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  return arr;
+}
+
 // ─── Employees tab ──────────────────────────────────────────────────────────
 function buildComparisonRows(p1, p2, label1, label2) {
   const map = new Map();
@@ -270,29 +294,41 @@ function LedgerTable({ rows, label1, label2 }) {
         <thead>
           <tr>
             <th className="ledger-name-col">Employee</th>
-            <th colSpan={3} className="ledger-group-head ledger-group-head--steel">{label1}</th>
-            <th colSpan={3} className="ledger-group-head ledger-group-head--sage">{label2}</th>
+            <th>Rate</th>
+            <th colSpan={5} className="ledger-group-head ledger-group-head--steel">{label1}</th>
+            <th colSpan={5} className="ledger-group-head ledger-group-head--sage">{label2}</th>
             <th>Δ TSTH</th>
           </tr>
           <tr className="ledger-subhead">
             <th></th>
-            <th>Hours</th><th>Revenue</th><th>TSTH</th>
-            <th>Hours</th><th>Revenue</th><th>TSTH</th>
+            <th></th>
+            <th>Hours</th><th>Revenue</th><th>TSTH</th><th>Labor Cost</th><th>Margin</th>
+            <th>Hours</th><th>Revenue</th><th>TSTH</th><th>Labor Cost</th><th>Margin</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
           {rows.map(r => {
             const delta = (r.p1?.revPerHour != null && r.p2?.revPerHour != null) ? r.p2.revPerHour - r.p1.revPerHour : null;
+            const rate = getHourlyRate(r.name);
+            const cost1 = rate != null ? laborCost(r.p1?.hoursDecimal ?? null, rate) : null;
+            const cost2 = rate != null ? laborCost(r.p2?.hoursDecimal ?? null, rate) : null;
+            const margin1 = (cost1 != null && r.p1?.serviceRevenue != null) ? r.p1.serviceRevenue - cost1 : null;
+            const margin2 = (cost2 != null && r.p2?.serviceRevenue != null) ? r.p2.serviceRevenue - cost2 : null;
             return (
               <tr key={r.name}>
                 <td className="ledger-name-col">{r.name}</td>
+                <td>{rate != null ? `$${rate.toFixed(2)}` : '—'}</td>
                 <td>{r.p1?.hoursDisplay || '—'}</td>
                 <td>{r.p1?.serviceRevenue != null ? fmt$(r.p1.serviceRevenue) : '—'}</td>
                 <td className="ledger-rate">{fmtRate(r.p1?.revPerHour)}</td>
+                <td>{cost1 != null ? fmt$(cost1) : '—'}</td>
+                <td className={margin1 != null && margin1 < 0 ? 'ledger-margin-neg' : ''}>{margin1 != null ? fmt$(margin1) : '—'}</td>
                 <td>{r.p2?.hoursDisplay || '—'}</td>
                 <td>{r.p2?.serviceRevenue != null ? fmt$(r.p2.serviceRevenue) : '—'}</td>
                 <td className="ledger-rate">{fmtRate(r.p2?.revPerHour)}</td>
+                <td>{cost2 != null ? fmt$(cost2) : '—'}</td>
+                <td className={margin2 != null && margin2 < 0 ? 'ledger-margin-neg' : ''}>{margin2 != null ? fmt$(margin2) : '—'}</td>
                 <td>{delta != null ? <Badge curr={r.p2.revPerHour} prev={r.p1.revPerHour} /> : '—'}</td>
               </tr>
             );
@@ -310,27 +346,7 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
     [p1, p2, label1, label2]
   );
 
-  const sorted = useMemo(() => {
-    const arr = [...rows];
-    if (sortBy === 'delta') {
-      arr.sort((a, b) => {
-        const da = (a.p2?.revPerHour ?? -Infinity) - (a.p1?.revPerHour ?? -Infinity);
-        const db = (b.p2?.revPerHour ?? -Infinity) - (b.p1?.revPerHour ?? -Infinity);
-        return (isFinite(db) ? db : -999) - (isFinite(da) ? da : -999);
-      });
-    } else if (sortBy === 'tsth') {
-      arr.sort((a, b) => {
-        const ta = Math.max(a.p1?.revPerHour ?? -Infinity, a.p2?.revPerHour ?? -Infinity);
-        const tb = Math.max(b.p1?.revPerHour ?? -Infinity, b.p2?.revPerHour ?? -Infinity);
-        return (isFinite(tb) ? tb : -999) - (isFinite(ta) ? ta : -999);
-      });
-    } else if (sortBy === 'revenue') {
-      arr.sort((a, b) => ((b.p1?.serviceRevenue || 0) + (b.p2?.serviceRevenue || 0)) - ((a.p1?.serviceRevenue || 0) + (a.p2?.serviceRevenue || 0)));
-    } else {
-      arr.sort((a, b) => a.name.localeCompare(b.name));
-    }
-    return arr;
-  }, [rows, sortBy]);
+  const sorted = useMemo(() => sortComparisonRows(rows, sortBy), [rows, sortBy]);
 
   const chartRows = useMemo(() => (
     [...rows]
@@ -364,6 +380,7 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
     ...(p2?.hoursOnly || []).map(n => `${n} (${label2}: hours logged, no matching sales record)`),
     ...(p2?.salesOnly || []).map(n => `${n} (${label2}: sales logged, no matching hours record)`),
     ...crossPeriodExcluded,
+    ...rows.filter(r => getHourlyRate(r.name) == null).map(r => `${r.name} (no hourly rate on file — check spelling)`),
   ];
 
   if (!rows.length) {
@@ -412,23 +429,24 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
 
 // ─── By Store tab ───────────────────────────────────────────────────────────
 function ByStoreTab({ p1, p2, label1, label2 }) {
+  const [sortBy, setSortBy] = useState('tsth');
   const { rows } = useMemo(() => buildComparisonRows(p1, p2, label1, label2), [p1, p2, label1, label2]);
 
   const groups = useMemo(() => {
     const byStore = new Map();
     STORE_ROSTER.stores.forEach(s => byStore.set(s.name, []));
     const unassigned = [];
-    [...rows].sort((a, b) => a.name.localeCompare(b.name)).forEach(r => {
+    rows.forEach(r => {
       const store = STORE_ROSTER.storeByName[normalizeEmployeeName(r.name)];
       if (store && byStore.has(store)) byStore.get(store).push(r);
       else unassigned.push(r);
     });
     const result = STORE_ROSTER.stores
-      .map(s => ({ name: s.name, rows: byStore.get(s.name) }))
+      .map(s => ({ name: s.name, rows: sortComparisonRows(byStore.get(s.name), sortBy) }))
       .filter(g => g.rows.length > 0);
-    if (unassigned.length) result.push({ name: 'No store on file', rows: unassigned });
+    if (unassigned.length) result.push({ name: 'No store on file', rows: sortComparisonRows(unassigned, sortBy) });
     return result;
-  }, [rows]);
+  }, [rows, sortBy]);
 
   if (!rows.length) {
     return <div className="empty-state"><p className="empty-title">No employees yet</p><p>Upload hours and sales files with matching data for both periods first.</p></div>;
@@ -436,6 +454,15 @@ function ByStoreTab({ p1, p2, label1, label2 }) {
 
   return (
     <div className="tab-content">
+      <div className="ledger-head-row">
+        <p className="section-label" style={{ margin: 0 }}>Grouped by store</p>
+        <select className="sort-select" value={sortBy} onChange={e => setSortBy(e.target.value)}>
+          <option value="tsth">Sort: highest TSTH</option>
+          <option value="delta">Sort: biggest change in TSTH</option>
+          <option value="revenue">Sort: total revenue</option>
+          <option value="name">Sort: name</option>
+        </select>
+      </div>
       {groups.map(g => (
         <div key={g.name} className="store-group">
           <p className="store-group-title">{g.name} <span className="store-group-count">{g.rows.length} employee{g.rows.length > 1 ? 's' : ''}</span></p>
@@ -453,7 +480,7 @@ function SetupTab({ configured }) {
     { n: 2, title: 'Export your two sales reports', body: 'Run the service-sales (KPI) report for the exact same two date ranges. The Service Revenue column is the one this app reads.' },
     { n: 3, title: 'Upload all four files', body: 'Tap + on each of the four slots above: Hours and Sales for Period 1, then Hours and Sales for Period 2. The date range label fills in automatically from the file.' },
     { n: 4, title: 'Employees are grouped by store automatically', body: 'The "By Store" tab groups this same comparison by location. The employee → store list is built into the app — no upload needed for it.' },
-    { n: 5, title: 'Read the comparison', body: 'Overview shows total productivity (TSTH — revenue per labor hour) for each period. Employee Performance shows the same breakdown per person, so you can see who got more efficient and who didn\u2019t. Only employees with both an hours record and a sales record for a period are included.' },
+    { n: 5, title: 'Read the comparison', body: 'Overview shows total productivity (TSTH — revenue per labor hour) for each period. Employee Performance and By Store show the same breakdown per person, including hourly rate, labor cost (with an 8% payroll tax built in), and the margin between what someone produced and what they cost. Only employees with both an hours record and a sales record for a period are included.' },
     { n: 6, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
   ];
   return (

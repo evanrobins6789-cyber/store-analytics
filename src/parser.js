@@ -81,7 +81,7 @@ function isExcludedName(cleanName) {
 }
 
 export function normalizeEmployeeName(raw) {
-  return cleanEmployeeName(raw).toLowerCase();
+  return cleanEmployeeName(raw).toLowerCase().replace(/-/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 // Convert a decimal hours value back into a "45h 08m" style display string
