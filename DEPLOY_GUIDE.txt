@@ -241,11 +241,26 @@ Now create the table that stores your data:
         updated_at timestamp with time zone default now()
       );
 
+      alter table periods enable row level security;
+
+      create policy "Allow all access"
+        on periods for all
+        using (true)
+        with check (true);
+
   15. Now click the green "Run" button. It is usually in the
       bottom right area of the SQL editor, or at the top.
 
   16. Below the text area you should see a result that says:
       "Success. No rows returned."
+
+      IMPORTANT: the "alter table" and "create policy" lines above are
+      what actually let the app read and write to this table. Without
+      them, Supabase silently blocks every request, and the app quietly
+      falls back to saving data only on your own device — with no error
+      shown. If you already ran the SQL without those lines, just paste
+      and run the "alter table" and "create policy" lines by themselves
+      now to fix it.
       That means it worked perfectly.
 
       If you see an error in red text, the most common reason is

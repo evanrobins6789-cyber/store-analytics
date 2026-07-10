@@ -54,10 +54,19 @@ create table periods (
   payload jsonb not null,
   updated_at timestamp with time zone default now()
 );
+
+alter table periods enable row level security;
+
+create policy "Allow all access"
+  on periods for all
+  using (true)
+  with check (true);
 ```
 
 15. Click the green **"Run"** button (or press Ctrl+Enter)
 16. You should see "Success. No rows returned" — that means it worked
+
+**Important:** that last `create policy` block is what actually lets the app read and write to the table. Without it, Supabase silently blocks every request from the app, and it quietly falls back to only saving data on your own device — you won't get an error, it'll just look like nothing saved when you check from another computer. If you already ran the SQL without the policy lines, just paste and run the `alter table` and `create policy` lines on their own now.
 
 **Get your API keys:**
 

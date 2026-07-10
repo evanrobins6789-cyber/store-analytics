@@ -585,7 +585,15 @@ function SetupTab({ configured }) {
   period_id text primary key,
   payload jsonb not null,
   updated_at timestamp with time zone default now()
-);`}</pre>
+);
+
+alter table periods enable row level security;
+
+create policy "Allow all access"
+  on periods for all
+  using (true)
+  with check (true);`}</pre>
+          <p className="step-body">That last policy is what lets the app actually read and write — without it, Supabase silently blocks every request and the app quietly falls back to saving only on your own device. If you already created the table without it, just run the <code>alter table</code> and <code>create policy</code> lines on their own.</p>
           <p className="step-body">Then add <code>REACT_APP_SUPABASE_URL</code> and <code>REACT_APP_SUPABASE_ANON_KEY</code> as environment variables in Vercel, using the values from Supabase → Settings → API.</p>
         </div>
       )}
@@ -606,12 +614,15 @@ export default function App() {
   const [panelOpen, setPanelOpen] = useState(true);
 
   useEffect(() => {
-    loadPeriods().then(saved => {
+    loadPeriods().then(({ data: saved, source, error }) => {
       setPeriods({
         period1: { ...emptyPeriod, ...(saved.period1 || {}) },
         period2: { ...emptyPeriod, ...(saved.period2 || {}) },
       });
       setLoading(false);
+      if (isConfigured() && source === 'local') {
+        showToast(`Couldn't reach Supabase (${error || 'unknown error'}) — showing this device's local data only`, 'error');
+      }
     }).catch(() => setLoading(false));
   }, []);
 
@@ -624,14 +635,19 @@ export default function App() {
     setUploadingSlot(prev => ({ ...prev, [periodKey]: kind }));
     try {
       const parsed = kind === 'hours' ? await parseHoursFile(file) : await parseSalesFile(file);
+      let next;
       setPeriods(prev => {
         const cur = prev[periodKey] || emptyPeriod;
-        const next = { ...cur, [kind]: parsed };
+        next = { ...cur, [kind]: parsed };
         if (!cur.label && parsed.dateRangeLabel) next.label = parsed.dateRangeLabel;
-        savePeriod(periodKey, next);
         return { ...prev, [periodKey]: next };
       });
-      showToast(`Loaded ${file.name} — ${parsed.employees.length} employees found`);
+      const result = await savePeriod(periodKey, next);
+      if (isConfigured() && !result.ok) {
+        showToast(`Loaded ${file.name}, but couldn't sync to Supabase (${result.error}) — only visible on this device`, 'error');
+      } else {
+        showToast(`Loaded ${file.name} — ${parsed.employees.length} employees found`);
+      }
     } catch (err) {
       showToast(err.message, 'error');
     } finally {
@@ -640,11 +656,12 @@ export default function App() {
   }, []);
 
   const handleLabelChange = useCallback((periodKey, text) => {
+    let next;
     setPeriods(prev => {
-      const next = { ...prev[periodKey], label: text };
-      savePeriod(periodKey, next);
+      next = { ...prev[periodKey], label: text };
       return { ...prev, [periodKey]: next };
     });
+    savePeriod(periodKey, next);
   }, []);
 
   const handleClearAll = async () => {
