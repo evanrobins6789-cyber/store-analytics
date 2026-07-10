@@ -263,7 +263,8 @@
   background: var(--paper-card); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px;
 }
 .ledger-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--paper-card); box-shadow: var(--shadow); }
-.ledger-table { width: 100%; border-collapse: collapse; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; min-width: 640px; }
+.ledger-table { width: 100%; border-collapse: collapse; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; min-width: 1080px; }
+.ledger-margin-neg { color: var(--rust); font-weight: 600; }
 .ledger-table th, .ledger-table td { padding: 9px 12px; text-align: right; white-space: nowrap; }
 .ledger-name-col { text-align: left !important; font-family: 'Work Sans', sans-serif; font-weight: 500; }
 .ledger-table thead tr:first-child th { border-bottom: 1px solid var(--line); padding-bottom: 4px; font-family: 'Work Sans', sans-serif; font-size: 11.5px; color: var(--ink-soft); font-weight: 600; }
