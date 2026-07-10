@@ -5,7 +5,7 @@ import {
   CategoryScale, LinearScale, BarElement, Tooltip, Legend
 } from 'chart.js';
 import { loadPeriods, savePeriod, clearPeriods, isConfigured } from './db';
-import { parseHoursFile, parseSalesFile, normalizeEmployeeName } from './parser';
+import { parseHoursFile, parseSalesFile, parseRosterFile, normalizeEmployeeName } from './parser';
 import './App.css';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
@@ -42,13 +42,20 @@ function mergePeriod(hours, sales) {
     else map.set(key, { name: e.name, hoursDecimal: null, hoursDisplay: null, serviceRevenue: e.serviceRevenue });
   });
 
-  const employees = Array.from(map.values()).map(e => ({
+  const allEmployees = Array.from(map.values()).map(e => ({
     ...e,
     revPerHour: (e.hoursDecimal > 0 && e.serviceRevenue != null) ? e.serviceRevenue / e.hoursDecimal : null,
-  })).sort((a, b) => (b.serviceRevenue ?? -1) - (a.serviceRevenue ?? -1));
+  }));
 
-  const hoursOnly = employees.filter(e => e.hoursDecimal != null && e.serviceRevenue == null).map(e => e.name);
-  const salesOnly = employees.filter(e => e.serviceRevenue != null && e.hoursDecimal == null).map(e => e.name);
+  // Only employees with BOTH an hours record and a sales record for this
+  // period count toward the metrics — partial data is excluded entirely
+  // rather than shown with blanks.
+  const employees = allEmployees
+    .filter(e => e.hoursDecimal != null && e.serviceRevenue != null)
+    .sort((a, b) => (b.serviceRevenue ?? -1) - (a.serviceRevenue ?? -1));
+
+  const hoursOnly = allEmployees.filter(e => e.hoursDecimal != null && e.serviceRevenue == null).map(e => e.name);
+  const salesOnly = allEmployees.filter(e => e.serviceRevenue != null && e.hoursDecimal == null).map(e => e.name);
 
   const totalHours = hours ? hours.totalHoursDecimal : null;
   const totalRevenue = sales ? sales.totalServiceRevenue : null;
@@ -246,6 +253,46 @@ function buildComparisonRows(p1, p2) {
   return Array.from(map.values());
 }
 
+function LedgerTable({ rows, label1, label2 }) {
+  return (
+    <div className="ledger-scroll">
+      <table className="ledger-table">
+        <thead>
+          <tr>
+            <th className="ledger-name-col">Employee</th>
+            <th colSpan={3} className="ledger-group-head ledger-group-head--steel">{label1}</th>
+            <th colSpan={3} className="ledger-group-head ledger-group-head--sage">{label2}</th>
+            <th>Δ TSTH</th>
+          </tr>
+          <tr className="ledger-subhead">
+            <th></th>
+            <th>Hours</th><th>Revenue</th><th>TSTH</th>
+            <th>Hours</th><th>Revenue</th><th>TSTH</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => {
+            const delta = (r.p1?.revPerHour != null && r.p2?.revPerHour != null) ? r.p2.revPerHour - r.p1.revPerHour : null;
+            return (
+              <tr key={r.name}>
+                <td className="ledger-name-col">{r.name}</td>
+                <td>{r.p1?.hoursDisplay || '—'}</td>
+                <td>{r.p1?.serviceRevenue != null ? fmt$(r.p1.serviceRevenue) : '—'}</td>
+                <td className="ledger-rate">{fmtRate(r.p1?.revPerHour)}</td>
+                <td>{r.p2?.hoursDisplay || '—'}</td>
+                <td>{r.p2?.serviceRevenue != null ? fmt$(r.p2.serviceRevenue) : '—'}</td>
+                <td className="ledger-rate">{fmtRate(r.p2?.revPerHour)}</td>
+                <td>{delta != null ? <Badge curr={r.p2.revPerHour} prev={r.p1.revPerHour} /> : '—'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function EmployeesTab({ p1, p2, label1, label2 }) {
   const [sortBy, setSortBy] = useState('delta');
   const rows = useMemo(() => buildComparisonRows(p1, p2), [p1, p2]);
@@ -330,41 +377,7 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
         </select>
       </div>
 
-      <div className="ledger-scroll">
-        <table className="ledger-table">
-          <thead>
-            <tr>
-              <th className="ledger-name-col">Employee</th>
-              <th colSpan={3} className="ledger-group-head ledger-group-head--steel">{label1}</th>
-              <th colSpan={3} className="ledger-group-head ledger-group-head--sage">{label2}</th>
-              <th>Δ TSTH</th>
-            </tr>
-            <tr className="ledger-subhead">
-              <th></th>
-              <th>Hours</th><th>Revenue</th><th>TSTH</th>
-              <th>Hours</th><th>Revenue</th><th>TSTH</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map(r => {
-              const delta = (r.p1?.revPerHour != null && r.p2?.revPerHour != null) ? r.p2.revPerHour - r.p1.revPerHour : null;
-              return (
-                <tr key={r.name}>
-                  <td className="ledger-name-col">{r.name}</td>
-                  <td>{r.p1?.hoursDisplay || '—'}</td>
-                  <td>{r.p1?.serviceRevenue != null ? fmt$(r.p1.serviceRevenue) : '—'}</td>
-                  <td className="ledger-rate">{fmtRate(r.p1?.revPerHour)}</td>
-                  <td>{r.p2?.hoursDisplay || '—'}</td>
-                  <td>{r.p2?.serviceRevenue != null ? fmt$(r.p2.serviceRevenue) : '—'}</td>
-                  <td className="ledger-rate">{fmtRate(r.p2?.revPerHour)}</td>
-                  <td>{delta != null ? <Badge curr={r.p2.revPerHour} prev={r.p1.revPerHour} /> : '—'}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      <LedgerTable rows={sorted} label1={label1} label2={label2} />
 
       {(p1?.otherRevenue > 0 || p2?.otherRevenue > 0) && (
         <p className="ledger-footnote">
@@ -374,11 +387,56 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
 
       {unmatched.length > 0 && (
         <div className="unmatched-box">
-          <p className="unmatched-title">⚠ {unmatched.length} name{unmatched.length > 1 ? 's' : ''} only appear in one file</p>
-          <p className="unmatched-hint">Usually a spelling difference between the two reports. Check these names:</p>
+          <p className="unmatched-title">⚠ {unmatched.length} name{unmatched.length > 1 ? 's' : ''} excluded — missing hours or sales data</p>
+          <p className="unmatched-hint">These aren't shown anywhere in the metrics because only one of the two reports had them. Usually a spelling difference between the reports, or they didn't work that period:</p>
           <ul>{unmatched.map((u, i) => <li key={i}>{u}</li>)}</ul>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── By Store tab ───────────────────────────────────────────────────────────
+function ByStoreTab({ p1, p2, label1, label2, roster }) {
+  const rows = useMemo(() => buildComparisonRows(p1, p2), [p1, p2]);
+
+  const groups = useMemo(() => {
+    if (!roster) return null;
+    const byStore = new Map();
+    roster.stores.forEach(s => byStore.set(s.name, []));
+    const unassigned = [];
+    [...rows].sort((a, b) => a.name.localeCompare(b.name)).forEach(r => {
+      const store = roster.storeByName[normalizeEmployeeName(r.name)];
+      if (store && byStore.has(store)) byStore.get(store).push(r);
+      else unassigned.push(r);
+    });
+    const result = roster.stores
+      .map(s => ({ name: s.name, rows: byStore.get(s.name) }))
+      .filter(g => g.rows.length > 0);
+    if (unassigned.length) result.push({ name: 'No store on file', rows: unassigned });
+    return result;
+  }, [rows, roster]);
+
+  if (!rows.length) {
+    return <div className="empty-state"><p className="empty-title">No employees yet</p><p>Upload hours and sales files for at least one period first.</p></div>;
+  }
+  if (!roster) {
+    return (
+      <div className="empty-state">
+        <p className="empty-title">No store roster uploaded</p>
+        <p>Upload the employee → store list from the file panel above to group this table by store.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="tab-content">
+      {groups.map(g => (
+        <div key={g.name} className="store-group">
+          <p className="store-group-title">{g.name} <span className="store-group-count">{g.rows.length} employee{g.rows.length > 1 ? 's' : ''}</span></p>
+          <LedgerTable rows={g.rows} label1={label1} label2={label2} />
+        </div>
+      ))}
     </div>
   );
 }
@@ -389,8 +447,9 @@ function SetupTab({ configured }) {
     { n: 1, title: 'Export your two hours reports', body: 'From your scheduling/POS system, run the attendance (hours) report for each period you want to compare — e.g. this week and last week.' },
     { n: 2, title: 'Export your two sales reports', body: 'Run the service-sales (KPI) report for the exact same two date ranges. The Service Revenue column is the one this app reads.' },
     { n: 3, title: 'Upload all four files', body: 'Tap + on each of the four slots above: Hours and Sales for Period 1, then Hours and Sales for Period 2. The date range label fills in automatically from the file.' },
-    { n: 4, title: 'Read the comparison', body: 'Overview shows total productivity (TSTH — revenue per labor hour) for each period. Employee Performance shows the same breakdown per person, so you can see who got more efficient and who didn\u2019t.' },
-    { n: 5, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
+    { n: 4, title: 'Optionally upload a store roster', body: 'A simple list of each store and the employees at it. This powers the "By Store" tab, which groups the same metrics by location.' },
+    { n: 5, title: 'Read the comparison', body: 'Overview shows total productivity (TSTH — revenue per labor hour) for each period. Employee Performance shows the same breakdown per person, so you can see who got more efficient and who didn\u2019t. Only employees with both an hours record and a sales record for a period are included.' },
+    { n: 6, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
   ];
   return (
     <div className="tab-content setup-tab">
@@ -424,15 +483,17 @@ function SetupTab({ configured }) {
 }
 
 // ─── App ────────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Employee Performance', 'Setup'];
+const TABS = ['Overview', 'Employee Performance', 'By Store', 'Setup'];
 const emptyPeriod = { label: '', hours: null, sales: null };
 
 export default function App() {
   const [periods, setPeriods] = useState({ period1: emptyPeriod, period2: emptyPeriod });
+  const [roster, setRoster] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('Overview');
   const [toast, setToast] = useState(null);
   const [uploadingSlot, setUploadingSlot] = useState({}); // { period1: 'hours'|'sales'|null, ... }
+  const [uploadingRoster, setUploadingRoster] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
 
   useEffect(() => {
@@ -441,6 +502,7 @@ export default function App() {
         period1: { ...emptyPeriod, ...(saved.period1 || {}) },
         period2: { ...emptyPeriod, ...(saved.period2 || {}) },
       });
+      setRoster(saved.roster || null);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
@@ -477,10 +539,25 @@ export default function App() {
     });
   }, []);
 
+  const handleRosterFile = useCallback(async file => {
+    setUploadingRoster(true);
+    try {
+      const parsed = await parseRosterFile(file);
+      setRoster(parsed);
+      await savePeriod('roster', parsed);
+      showToast(`Loaded roster — ${parsed.stores.length} stores`);
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setUploadingRoster(false);
+    }
+  }, []);
+
   const handleClearAll = async () => {
-    if (!window.confirm('Clear all four files and start over? This cannot be undone.')) return;
+    if (!window.confirm('Clear all uploaded files and start over? This cannot be undone.')) return;
     await clearPeriods();
     setPeriods({ period1: emptyPeriod, period2: emptyPeriod });
+    setRoster(null);
     setPanelOpen(true);
     showToast('All data cleared');
   };
@@ -489,7 +566,7 @@ export default function App() {
   const merged2 = useMemo(() => mergePeriod(periods.period2?.hours, periods.period2?.sales), [periods.period2]);
   const label1 = periods.period1?.label || 'Period 1';
   const label2 = periods.period2?.label || 'Period 2';
-  const hasAnyData = !!(periods.period1?.hours || periods.period1?.sales || periods.period2?.hours || periods.period2?.sales);
+  const hasAnyData = !!(periods.period1?.hours || periods.period1?.sales || periods.period2?.hours || periods.period2?.sales || roster);
   const bothComplete = merged1?.complete && merged2?.complete;
 
   if (loading) return <div className="app-loading"><div className="spinner large" /></div>;
@@ -500,7 +577,7 @@ export default function App() {
 
       <header className="app-header">
         <div className="header-left">
-          <h1 className="app-title">Time &amp; Till</h1>
+          <h1 className="app-title">Employee Performance</h1>
           <p className="app-subtitle">
             {merged1?.location || merged2?.location || 'Labor hours vs. service sales, side by side'}
           </p>
@@ -512,6 +589,21 @@ export default function App() {
 
       {(!bothComplete || panelOpen) && (
         <section className="upload-center">
+          <div className="roster-panel">
+            <div className="period-panel-head">
+              <span className="period-eyebrow">Store roster (optional)</span>
+              <p className="roster-hint-text">Maps each employee to a store — powers the "By Store" tab</p>
+            </div>
+            <UploadSlot
+              inputId="roster-file"
+              title="Employee → store list"
+              hint="Upload a file listing each store and its employees"
+              accent="brass"
+              uploading={uploadingRoster}
+              fileInfo={roster ? { fileName: roster.fileName, sub: `${roster.stores.length} stores` } : null}
+              onFile={file => handleRosterFile(file)}
+            />
+          </div>
           <div className="upload-center-grid">
             <PeriodPanel
               periodKey="period1" periodNum="1" period={periods.period1}
@@ -548,6 +640,7 @@ export default function App() {
           <main className="app-main">
             {tab === 'Overview' && <OverviewTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
             {tab === 'Employee Performance' && <EmployeesTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
+            {tab === 'By Store' && <ByStoreTab p1={merged1} p2={merged2} label1={label1} label2={label2} roster={roster} />}
             {tab === 'Setup' && <SetupTab configured={isConfigured()} />}
           </main>
         </>

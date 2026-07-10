@@ -65,7 +65,7 @@ function findHeaderCol(grid, matchers) {
   return null;
 }
 
-function cleanEmployeeName(raw) {
+export function cleanEmployeeName(raw) {
   return String(raw).replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
@@ -251,6 +251,50 @@ export async function parseSalesFile(file) {
     totalServiceRevenue,
     otherRevenue: Math.round(otherRevenue * 100) / 100,
     employees,
+    fileName: file.name,
+  };
+}
+
+// ─── Store roster ───────────────────────────────────────────────────────────
+// A single-column list like:
+//   STORE NAME: PIKE CREEK
+//   Alicia Petrucci
+//   Jaylynn Muniz
+//   (blank line)
+//   STORE NAME: MEDIA
+//   ...
+export async function parseRosterFile(file) {
+  const grid = await readWorkbookGrid(file);
+
+  const stores = [];
+  let current = null;
+
+  for (const row of grid) {
+    const text = cellText(row[0]);
+    if (!text) continue;
+
+    const m = text.match(/^store\s*name\s*:\s*(.+)$/i);
+    if (m) {
+      current = { name: m[1].trim(), employees: [] };
+      stores.push(current);
+      continue;
+    }
+    if (!current) continue;
+
+    const name = cleanEmployeeName(text);
+    if (name) current.employees.push(name);
+  }
+
+  if (!stores.length) throw new Error('Could not find any "STORE NAME:" sections in this file.');
+
+  const storeByName = {};
+  stores.forEach(s => {
+    s.employees.forEach(n => { storeByName[normalizeEmployeeName(n)] = s.name; });
+  });
+
+  return {
+    stores: stores.map(s => ({ name: s.name, employees: s.employees })),
+    storeByName,
     fileName: file.name,
   };
 }
