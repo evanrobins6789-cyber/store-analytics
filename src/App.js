@@ -7,7 +7,7 @@ import {
 import { loadPeriods, savePeriod, clearPeriods, isConfigured } from './db';
 import { parseHoursFile, parseSalesFile, normalizeEmployeeName } from './parser';
 import { STORE_ROSTER } from './storeRoster';
-import { getHourlyRate, laborCost } from './hourlyRates';
+import { getHourlyRate, totalPay } from './hourlyRates';
 import './App.css';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
@@ -34,14 +34,14 @@ function mergePeriod(hours, sales) {
 
   (hours?.employees || []).forEach(e => {
     map.set(normalizeEmployeeName(e.name), {
-      name: e.name, hoursDecimal: e.hoursDecimal, hoursDisplay: e.hoursDisplay, serviceRevenue: null,
+      name: e.name, hoursDecimal: e.hoursDecimal, hoursDisplay: e.hoursDisplay, serviceRevenue: null, retailSales: null,
     });
   });
   (sales?.employees || []).forEach(e => {
     const key = normalizeEmployeeName(e.name);
     const existing = map.get(key);
-    if (existing) existing.serviceRevenue = e.serviceRevenue;
-    else map.set(key, { name: e.name, hoursDecimal: null, hoursDisplay: null, serviceRevenue: e.serviceRevenue });
+    if (existing) { existing.serviceRevenue = e.serviceRevenue; existing.retailSales = e.retailSales; }
+    else map.set(key, { name: e.name, hoursDecimal: null, hoursDisplay: null, serviceRevenue: e.serviceRevenue, retailSales: e.retailSales });
   });
 
   const allEmployees = Array.from(map.values()).map(e => ({
@@ -287,53 +287,103 @@ function buildComparisonRows(p1, p2, label1, label2) {
   return { rows, excluded };
 }
 
+function periodMetrics(p, rate) {
+  if (!p) return null;
+  const hours = p.hoursDecimal;
+  const serviceRev = p.serviceRevenue ?? 0;
+  const retail = p.retailSales ?? 0;
+  const totalSales = serviceRev + retail;
+  const pay = totalPay(hours, rate, retail);
+  const production = pay != null ? totalSales - pay : null;
+  const tsthService = (hours > 0) ? serviceRev / hours : null;
+  const tsthTotal = (hours > 0) ? totalSales / hours : null;
+  const payrollPct = (pay != null && totalSales > 0) ? pay / totalSales : null;
+  return { hours, hoursDisplay: p.hoursDisplay, serviceRev, retail, totalSales, pay, production, tsthService, tsthTotal, payrollPct };
+}
+
+function avg(values) {
+  const v = values.filter(x => x != null && !isNaN(x));
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+}
+
 function LedgerTable({ rows, label1, label2 }) {
+  const enriched = rows.map(r => {
+    const rate = getHourlyRate(r.name);
+    return { ...r, rate, m1: periodMetrics(r.p1, rate), m2: periodMetrics(r.p2, rate) };
+  });
+
+  const avgTsth1 = avg(enriched.map(r => r.m1?.tsthService));
+  const avgTsthTotal1 = avg(enriched.map(r => r.m1?.tsthTotal));
+  const avgPayroll1 = avg(enriched.map(r => r.m1?.payrollPct));
+  const avgTsth2 = avg(enriched.map(r => r.m2?.tsthService));
+  const avgTsthTotal2 = avg(enriched.map(r => r.m2?.tsthTotal));
+  const avgPayroll2 = avg(enriched.map(r => r.m2?.payrollPct));
+  const pct = n => (n == null ? '—' : `${(n * 100).toFixed(1)}%`);
+
   return (
     <div className="ledger-scroll">
       <table className="ledger-table">
         <thead>
           <tr>
             <th className="ledger-name-col">Employee</th>
-            <th>Rate</th>
-            <th colSpan={5} className="ledger-group-head ledger-group-head--steel">{label1}</th>
-            <th colSpan={5} className="ledger-group-head ledger-group-head--sage">{label2}</th>
+            <th>Base Pay $</th>
+            <th colSpan={9} className="ledger-group-head ledger-group-head--steel">{label1}</th>
+            <th colSpan={9} className="ledger-group-head ledger-group-head--sage">{label2}</th>
             <th>Δ TSTH</th>
           </tr>
           <tr className="ledger-subhead">
             <th></th>
             <th></th>
-            <th>Hours</th><th>Revenue</th><th>TSTH</th><th>Labor Cost</th><th>Margin</th>
-            <th>Hours</th><th>Revenue</th><th>TSTH</th><th>Labor Cost</th><th>Margin</th>
+            <th>Actual Hours</th><th>Service Rev</th><th>Retail Sales</th><th>Total Sales</th><th>Pay + Tax + Retail</th><th>Production</th><th>TSTH</th><th>TSTH (Total)</th><th>Payroll %</th>
+            <th>Actual Hours</th><th>Service Rev</th><th>Retail Sales</th><th>Total Sales</th><th>Pay + Tax + Retail</th><th>Production</th><th>TSTH</th><th>TSTH (Total)</th><th>Payroll %</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
-          {rows.map(r => {
-            const delta = (r.p1?.revPerHour != null && r.p2?.revPerHour != null) ? r.p2.revPerHour - r.p1.revPerHour : null;
-            const rate = getHourlyRate(r.name);
-            const cost1 = rate != null ? laborCost(r.p1?.hoursDecimal ?? null, rate) : null;
-            const cost2 = rate != null ? laborCost(r.p2?.hoursDecimal ?? null, rate) : null;
-            const margin1 = (cost1 != null && r.p1?.serviceRevenue != null) ? r.p1.serviceRevenue - cost1 : null;
-            const margin2 = (cost2 != null && r.p2?.serviceRevenue != null) ? r.p2.serviceRevenue - cost2 : null;
+          {enriched.map(r => {
+            const delta = (r.m1?.tsthService != null && r.m2?.tsthService != null) ? r.m2.tsthService - r.m1.tsthService : null;
             return (
               <tr key={r.name}>
                 <td className="ledger-name-col">{r.name}</td>
-                <td>{rate != null ? `$${rate.toFixed(2)}` : '—'}</td>
-                <td>{r.p1?.hoursDisplay || '—'}</td>
-                <td>{r.p1?.serviceRevenue != null ? fmt$(r.p1.serviceRevenue) : '—'}</td>
-                <td className="ledger-rate">{fmtRate(r.p1?.revPerHour)}</td>
-                <td>{cost1 != null ? fmt$(cost1) : '—'}</td>
-                <td className={margin1 != null && margin1 < 0 ? 'ledger-margin-neg' : ''}>{margin1 != null ? fmt$(margin1) : '—'}</td>
-                <td>{r.p2?.hoursDisplay || '—'}</td>
-                <td>{r.p2?.serviceRevenue != null ? fmt$(r.p2.serviceRevenue) : '—'}</td>
-                <td className="ledger-rate">{fmtRate(r.p2?.revPerHour)}</td>
-                <td>{cost2 != null ? fmt$(cost2) : '—'}</td>
-                <td className={margin2 != null && margin2 < 0 ? 'ledger-margin-neg' : ''}>{margin2 != null ? fmt$(margin2) : '—'}</td>
-                <td>{delta != null ? <Badge curr={r.p2.revPerHour} prev={r.p1.revPerHour} /> : '—'}</td>
+                <td>{r.rate != null ? `$${r.rate.toFixed(2)}` : '—'}</td>
+                <td>{r.m1.hoursDisplay || '—'}</td>
+                <td>{fmt$(r.m1.serviceRev)}</td>
+                <td>{fmt$(r.m1.retail)}</td>
+                <td>{fmt$(r.m1.totalSales)}</td>
+                <td>{r.m1.pay != null ? fmt$(r.m1.pay) : '—'}</td>
+                <td className={r.m1.production != null && r.m1.production < 0 ? 'ledger-margin-neg' : ''}>{r.m1.production != null ? fmt$(r.m1.production) : '—'}</td>
+                <td className="ledger-rate">{fmtRate(r.m1.tsthService)}</td>
+                <td className="ledger-rate">{fmtRate(r.m1.tsthTotal)}</td>
+                <td>{pct(r.m1.payrollPct)}</td>
+                <td>{r.m2.hoursDisplay || '—'}</td>
+                <td>{fmt$(r.m2.serviceRev)}</td>
+                <td>{fmt$(r.m2.retail)}</td>
+                <td>{fmt$(r.m2.totalSales)}</td>
+                <td>{r.m2.pay != null ? fmt$(r.m2.pay) : '—'}</td>
+                <td className={r.m2.production != null && r.m2.production < 0 ? 'ledger-margin-neg' : ''}>{r.m2.production != null ? fmt$(r.m2.production) : '—'}</td>
+                <td className="ledger-rate">{fmtRate(r.m2.tsthService)}</td>
+                <td className="ledger-rate">{fmtRate(r.m2.tsthTotal)}</td>
+                <td>{pct(r.m2.payrollPct)}</td>
+                <td>{delta != null ? <Badge curr={r.m2.tsthService} prev={r.m1.tsthService} /> : '—'}</td>
               </tr>
             );
           })}
         </tbody>
+        <tfoot>
+          <tr className="ledger-avg-row">
+            <td className="ledger-name-col">Average</td>
+            <td></td>
+            <td></td><td></td><td></td><td></td><td></td><td></td>
+            <td className="ledger-rate">{fmtRate(avgTsth1)}</td>
+            <td className="ledger-rate">{fmtRate(avgTsthTotal1)}</td>
+            <td>{pct(avgPayroll1)}</td>
+            <td></td><td></td><td></td><td></td><td></td><td></td>
+            <td className="ledger-rate">{fmtRate(avgTsth2)}</td>
+            <td className="ledger-rate">{fmtRate(avgTsthTotal2)}</td>
+            <td>{pct(avgPayroll2)}</td>
+            <td></td>
+          </tr>
+        </tfoot>
       </table>
     </div>
   );
@@ -480,7 +530,7 @@ function SetupTab({ configured }) {
     { n: 2, title: 'Export your two sales reports', body: 'Run the service-sales (KPI) report for the exact same two date ranges. The Service Revenue column is the one this app reads.' },
     { n: 3, title: 'Upload all four files', body: 'Tap + on each of the four slots above: Hours and Sales for Period 1, then Hours and Sales for Period 2. The date range label fills in automatically from the file.' },
     { n: 4, title: 'Employees are grouped by store automatically', body: 'The "By Store" tab groups this same comparison by location. The employee → store list is built into the app — no upload needed for it.' },
-    { n: 5, title: 'Read the comparison', body: 'Overview shows total productivity (TSTH — revenue per labor hour) for each period. Employee Performance and By Store show the same breakdown per person, including hourly rate, labor cost (with an 8% payroll tax built in), and the margin between what someone produced and what they cost. Only employees with both an hours record and a sales record for a period are included.' },
+    { n: 5, title: 'Read the comparison', body: 'Employee Performance and By Store break down each period by Actual Hours, Service Rev, Retail Sales, Total Sales, Pay + Tax + Retail (hourly pay + 10% retail commission + 8% payroll tax), Production (what they made minus what they cost), two TSTH columns (service-only and total-sales), and Payroll % (pay ÷ total sales). Averages for both TSTH columns and Payroll % show at the bottom of each table. Only employees with both an hours record and a sales record for a period are included.' },
     { n: 6, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
   ];
   return (

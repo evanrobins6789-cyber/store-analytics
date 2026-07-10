@@ -26,6 +26,7 @@ const RATES = [
 ];
 
 export const PAYROLL_TAX_RATE = 0.08;
+export const RETAIL_COMMISSION_RATE = 0.10;
 
 const rateByName = {};
 RATES.forEach(r => { rateByName[normalizeEmployeeName(r.name)] = r.rate; });
@@ -35,8 +36,10 @@ export function getHourlyRate(name) {
   return rate == null ? null : rate;
 }
 
-// Labor cost for a period: hours * rate, with payroll tax added on top.
-export function laborCost(hoursDecimal, rate) {
+// Total pay for a period: (hours * rate) + a 10% commission on retail sales,
+// then an 8% payroll tax added on top of that whole amount.
+export function totalPay(hoursDecimal, rate, retailSales) {
   if (hoursDecimal == null || rate == null) return null;
-  return hoursDecimal * rate * (1 + PAYROLL_TAX_RATE);
+  const base = hoursDecimal * rate + (retailSales || 0) * RETAIL_COMMISSION_RATE;
+  return base * (1 + PAYROLL_TAX_RATE);
 }

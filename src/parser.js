@@ -218,38 +218,62 @@ export async function parseSalesFile(file) {
   ]);
   if (!hdr) throw new Error('Could not find a "Service Revenue" column in this file. Make sure it is a sales/KPI export.');
 
+  // Retail sales = "Product Revenue" in the KPI export. Optional — if the
+  // report doesn't have it, retail sales are just treated as 0 everywhere.
+  const retailHdr = findHeaderCol(grid, [
+    t => t === 'product revenue',
+    t => t.includes('product') && t.includes('revenue') && !t.includes('average') && !t.includes('invoice'),
+  ]);
+
   const nameCol = 0;
   const revCol = hdr.col;
+  const retailCol = retailHdr ? retailHdr.col : null;
   const employees = [];
   let otherRevenue = 0;
+  let otherRetailSales = 0;
   let grandTotal = null;
+  let grandTotalRetail = null;
+
+  const numAt = (row, col) => {
+    if (col == null) return 0;
+    const raw = row[col]?.v;
+    return typeof raw === 'number' ? raw : (parseFloat(String(raw).replace(/[$,]/g, '')) || 0);
+  };
 
   for (let r = hdr.row + 1; r < grid.length; r++) {
     const row = grid[r];
     if (!rowHasData(row)) continue;
     const nameText = cellText(row[nameCol]);
 
-    const rawRev = row[revCol]?.v;
-    const rev = typeof rawRev === 'number'
-      ? rawRev
-      : (parseFloat(String(rawRev).replace(/[$,]/g, '')) || 0);
+    const rev = numAt(row, revCol);
+    const retail = numAt(row, retailCol);
 
-    if (/^grand\s*total\s*:?$/i.test(nameText)) { grandTotal = rev; continue; }
+    if (/^grand\s*total\s*:?$/i.test(nameText)) { grandTotal = rev; grandTotalRetail = retail; continue; }
 
     const cleanName = cleanEmployeeName(nameText);
-    if (!cleanName || isExcludedName(cleanName)) { otherRevenue += rev; continue; }
+    if (!cleanName || isExcludedName(cleanName)) { otherRevenue += rev; otherRetailSales += retail; continue; }
 
-    employees.push({ name: cleanName, serviceRevenue: Math.round(rev * 100) / 100 });
+    employees.push({
+      name: cleanName,
+      serviceRevenue: Math.round(rev * 100) / 100,
+      retailSales: Math.round(retail * 100) / 100,
+    });
   }
 
   const totalServiceRevenue = grandTotal != null
     ? Math.round(grandTotal * 100) / 100
     : Math.round((employees.reduce((s, e) => s + e.serviceRevenue, 0) + otherRevenue) * 100) / 100;
 
+  const totalRetailSales = grandTotalRetail != null
+    ? Math.round(grandTotalRetail * 100) / 100
+    : Math.round((employees.reduce((s, e) => s + e.retailSales, 0) + otherRetailSales) * 100) / 100;
+
   return {
     dateRangeLabel: dateRange ? dateRange.label : null,
     totalServiceRevenue,
+    totalRetailSales,
     otherRevenue: Math.round(otherRevenue * 100) / 100,
+    otherRetailSales: Math.round(otherRetailSales * 100) / 100,
     employees,
     fileName: file.name,
   };
