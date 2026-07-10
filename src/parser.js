@@ -69,6 +69,17 @@ function cleanEmployeeName(raw) {
   return String(raw).replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// Names that should never show up as an individual employee — managers we
+// don't want in the productivity comparison, and system/house buckets that
+// aren't a real staff member.
+const EXCLUDED_EXACT_NAMES = ['ciana santiago', 'house sale'];
+function isExcludedName(cleanName) {
+  const n = cleanName.toLowerCase();
+  if (EXCLUDED_EXACT_NAMES.includes(n)) return true;
+  if (/\bpos\b/.test(n)) return true;
+  return false;
+}
+
 export function normalizeEmployeeName(raw) {
   return cleanEmployeeName(raw).toLowerCase();
 }
@@ -168,8 +179,11 @@ export async function parseHoursFile(file) {
     const parsed = parseHoursCell(row[hoursCol]);
     if (!parsed) continue;
 
+    const cleanName = cleanEmployeeName(nameText);
+    if (isExcludedName(cleanName)) continue;
+
     employees.push({
-      name: cleanEmployeeName(nameText),
+      name: cleanName,
       hoursDecimal: Math.round(parsed.decimal * 100) / 100,
       hoursDisplay: `${parsed.hours}h ${String(parsed.minutes).padStart(2, '0')}m`,
     });
@@ -223,7 +237,7 @@ export async function parseSalesFile(file) {
     if (/^grand\s*total\s*:?$/i.test(nameText)) { grandTotal = rev; continue; }
 
     const cleanName = cleanEmployeeName(nameText);
-    if (!cleanName) { otherRevenue += rev; continue; }
+    if (!cleanName || isExcludedName(cleanName)) { otherRevenue += rev; continue; }
 
     employees.push({ name: cleanName, serviceRevenue: Math.round(rev * 100) / 100 });
   }

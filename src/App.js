@@ -11,7 +11,7 @@ import './App.css';
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
 
 const fmt$ = n => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-const fmtRate = n => (n == null ? '—' : `$${n.toFixed(2)}/hr`);
+const fmtRate = n => (n == null ? '—' : `$${n.toFixed(2)} TSTH`);
 
 function pctChange(curr, prev) {
   if (!prev) return null;
@@ -104,7 +104,7 @@ function BalanceScale({ leftLabel, rightLabel, leftValue, rightValue }) {
           <span className="balance-side-value">{fmtRate(rightValue)}</span>
         </div>
       </div>
-      <p className="balance-caption">Service revenue earned per labor hour</p>
+      <p className="balance-caption">TSTH — service revenue earned per labor hour</p>
     </div>
   );
 }
@@ -197,7 +197,7 @@ function PeriodSummaryCard({ label, data, deltaHours, deltaRevenue, deltaRate })
         {deltaRevenue != null && <Badge curr={data.totalRevenue} prev={data.totalRevenue - deltaRevenue} />}
       </div>
       <div className="summary-row summary-row--highlight">
-        <span className="summary-label">Revenue / labor hour</span>
+        <span className="summary-label">TSTH</span>
         <span className="summary-value">{fmtRate(data.totalRevPerHour)}</span>
         {deltaRate != null && <Badge curr={data.totalRevPerHour} prev={data.totalRevPerHour - deltaRate} />}
       </div>
@@ -258,6 +258,12 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
         const db = (b.p2?.revPerHour ?? -Infinity) - (b.p1?.revPerHour ?? -Infinity);
         return (isFinite(db) ? db : -999) - (isFinite(da) ? da : -999);
       });
+    } else if (sortBy === 'tsth') {
+      arr.sort((a, b) => {
+        const ta = Math.max(a.p1?.revPerHour ?? -Infinity, a.p2?.revPerHour ?? -Infinity);
+        const tb = Math.max(b.p1?.revPerHour ?? -Infinity, b.p2?.revPerHour ?? -Infinity);
+        return (isFinite(tb) ? tb : -999) - (isFinite(ta) ? ta : -999);
+      });
     } else if (sortBy === 'revenue') {
       arr.sort((a, b) => ((b.p1?.serviceRevenue || 0) + (b.p2?.serviceRevenue || 0)) - ((a.p1?.serviceRevenue || 0) + (a.p2?.serviceRevenue || 0)));
     } else {
@@ -307,7 +313,7 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
     <div className="tab-content">
       {chartRows.length > 0 && (
         <div className="chart-card">
-          <p className="chart-title">Revenue per labor hour, by employee</p>
+          <p className="chart-title">TSTH by employee</p>
           <div style={{ height: Math.max(220, chartRows.length * 34 + 60) }}>
             <Bar data={chartData} options={chartOpts} />
           </div>
@@ -317,7 +323,8 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
       <div className="ledger-head-row">
         <p className="section-label" style={{ margin: 0 }}>Full comparison</p>
         <select className="sort-select" value={sortBy} onChange={e => setSortBy(e.target.value)}>
-          <option value="delta">Sort: biggest change in $/hr</option>
+          <option value="delta">Sort: biggest change in TSTH</option>
+          <option value="tsth">Sort: highest TSTH</option>
           <option value="revenue">Sort: total revenue</option>
           <option value="name">Sort: name</option>
         </select>
@@ -330,12 +337,12 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
               <th className="ledger-name-col">Employee</th>
               <th colSpan={3} className="ledger-group-head ledger-group-head--steel">{label1}</th>
               <th colSpan={3} className="ledger-group-head ledger-group-head--sage">{label2}</th>
-              <th>Δ $/hr</th>
+              <th>Δ TSTH</th>
             </tr>
             <tr className="ledger-subhead">
               <th></th>
-              <th>Hours</th><th>Revenue</th><th>$/hr</th>
-              <th>Hours</th><th>Revenue</th><th>$/hr</th>
+              <th>Hours</th><th>Revenue</th><th>TSTH</th>
+              <th>Hours</th><th>Revenue</th><th>TSTH</th>
               <th></th>
             </tr>
           </thead>
@@ -382,7 +389,7 @@ function SetupTab({ configured }) {
     { n: 1, title: 'Export your two hours reports', body: 'From your scheduling/POS system, run the attendance (hours) report for each period you want to compare — e.g. this week and last week.' },
     { n: 2, title: 'Export your two sales reports', body: 'Run the service-sales (KPI) report for the exact same two date ranges. The Service Revenue column is the one this app reads.' },
     { n: 3, title: 'Upload all four files', body: 'Tap + on each of the four slots above: Hours and Sales for Period 1, then Hours and Sales for Period 2. The date range label fills in automatically from the file.' },
-    { n: 4, title: 'Read the comparison', body: 'Overview shows total productivity (revenue per labor hour) for each period. Employees shows the same breakdown per person, so you can see who got more efficient and who didn\u2019t.' },
+    { n: 4, title: 'Read the comparison', body: 'Overview shows total productivity (TSTH — revenue per labor hour) for each period. Employee Performance shows the same breakdown per person, so you can see who got more efficient and who didn\u2019t.' },
     { n: 5, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
   ];
   return (
@@ -417,7 +424,7 @@ function SetupTab({ configured }) {
 }
 
 // ─── App ────────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Employees', 'Setup'];
+const TABS = ['Overview', 'Employee Performance', 'Setup'];
 const emptyPeriod = { label: '', hours: null, sales: null };
 
 export default function App() {
@@ -540,7 +547,7 @@ export default function App() {
           </nav>
           <main className="app-main">
             {tab === 'Overview' && <OverviewTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
-            {tab === 'Employees' && <EmployeesTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
+            {tab === 'Employee Performance' && <EmployeesTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
             {tab === 'Setup' && <SetupTab configured={isConfigured()} />}
           </main>
         </>
