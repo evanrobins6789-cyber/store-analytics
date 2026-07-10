@@ -267,6 +267,14 @@
 .ledger-margin-neg { color: var(--rust); font-weight: 600; }
 .ledger-avg-row { border-top: 2px solid var(--brass); font-weight: 600; background: rgba(184,134,62,0.09); }
 .ledger-avg-row td { padding-top: 8px; padding-bottom: 8px; }
+
+/* Strong dividers marking where each period's block of columns starts */
+.ledger-table th:nth-child(3), .ledger-table td:nth-child(3),
+.ledger-table th:nth-child(12), .ledger-table td:nth-child(12),
+.ledger-table th:nth-child(21), .ledger-table td:nth-child(21) {
+  border-left: 2.5px solid var(--brass);
+}
+.ledger-group-head--steel, .ledger-group-head--sage { border-left: 2.5px solid var(--brass); }
 .ledger-table th, .ledger-table td { padding: 9px 12px; text-align: right; white-space: nowrap; }
 .ledger-name-col { text-align: left !important; font-family: 'Work Sans', sans-serif; font-weight: 500; }
 .ledger-table thead tr:first-child th { border-bottom: 1px solid var(--line); padding-bottom: 4px; font-family: 'Work Sans', sans-serif; font-size: 11.5px; color: var(--ink-soft); font-weight: 600; }

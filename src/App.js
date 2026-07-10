@@ -61,14 +61,27 @@ function mergePeriod(hours, sales) {
 
   const totalHours = hours ? hours.totalHoursDecimal : null;
   const totalRevenue = sales ? sales.totalServiceRevenue : null;
+  const totalRetailSales = sales ? sales.totalRetailSales : null;
   const totalRevPerHour = (totalHours && totalRevenue != null && totalHours > 0) ? totalRevenue / totalHours : null;
+  const totalSalesAll = (totalRevenue || 0) + (totalRetailSales || 0);
+
+  const totalPayroll = employees.reduce((sum, e) => {
+    const rate = getHourlyRate(e.name);
+    const pay = totalPay(e.hoursDecimal, rate, e.retailSales);
+    return pay != null ? sum + pay : sum;
+  }, 0);
+  const payrollPct = totalSalesAll > 0 ? totalPayroll / totalSalesAll : null;
 
   return {
     location: hours?.location || null,
     totalHours,
     totalHoursDisplay: hours?.totalHoursDisplay || null,
     totalRevenue,
+    totalRetailSales,
+    totalSalesAll,
     totalRevPerHour,
+    totalPayroll,
+    payrollPct,
     otherRevenue: sales?.otherRevenue || 0,
     employees,
     hoursOnly,
@@ -183,7 +196,7 @@ function PeriodPanel({ periodKey, periodNum, period, uploadingSlot, onFile, onLa
 }
 
 // ─── Overview tab ───────────────────────────────────────────────────────────
-function PeriodSummaryCard({ label, data, deltaHours, deltaRevenue, deltaRate }) {
+function PeriodSummaryCard({ label, data, deltaHours, deltaRevenue, deltaRate, deltaPayroll, deltaPayrollPct }) {
   if (!data) {
     return (
       <div className="summary-card summary-card--empty">
@@ -210,6 +223,16 @@ function PeriodSummaryCard({ label, data, deltaHours, deltaRevenue, deltaRate })
         <span className="summary-value">{fmtRate(data.totalRevPerHour)}</span>
         {deltaRate != null && <Badge curr={data.totalRevPerHour} prev={data.totalRevPerHour - deltaRate} />}
       </div>
+      <div className="summary-row">
+        <span className="summary-label">Total payroll</span>
+        <span className="summary-value">{data.totalPayroll != null ? fmt$(data.totalPayroll) : '—'}</span>
+        {deltaPayroll != null && <Badge curr={data.totalPayroll} prev={data.totalPayroll - deltaPayroll} />}
+      </div>
+      <div className="summary-row">
+        <span className="summary-label">Payroll %</span>
+        <span className="summary-value">{data.payrollPct != null ? `${(data.payrollPct * 100).toFixed(1)}%` : '—'}</span>
+        {deltaPayrollPct != null && <Badge curr={data.payrollPct} prev={data.payrollPct - deltaPayrollPct} />}
+      </div>
       {!data.complete && (
         <p className="summary-warn">⚠ still missing the {data.hasHours ? 'sales' : 'hours'} file for this period</p>
       )}
@@ -221,6 +244,8 @@ function OverviewTab({ p1, p2, label1, label2 }) {
   const deltaHours = (p1?.totalHours != null && p2?.totalHours != null) ? p2.totalHours - p1.totalHours : null;
   const deltaRevenue = (p1?.totalRevenue != null && p2?.totalRevenue != null) ? p2.totalRevenue - p1.totalRevenue : null;
   const deltaRate = (p1?.totalRevPerHour != null && p2?.totalRevPerHour != null) ? p2.totalRevPerHour - p1.totalRevPerHour : null;
+  const deltaPayroll = (p1?.totalPayroll != null && p2?.totalPayroll != null) ? p2.totalPayroll - p1.totalPayroll : null;
+  const deltaPayrollPct = (p1?.payrollPct != null && p2?.payrollPct != null) ? p2.payrollPct - p1.payrollPct : null;
 
   return (
     <div className="tab-content">
@@ -234,7 +259,11 @@ function OverviewTab({ p1, p2, label1, label2 }) {
       )}
       <div className="period-compare-grid">
         <PeriodSummaryCard label={label1} data={p1} />
-        <PeriodSummaryCard label={label2} data={p2} deltaHours={deltaHours} deltaRevenue={deltaRevenue} deltaRate={deltaRate} />
+        <PeriodSummaryCard
+          label={label2} data={p2}
+          deltaHours={deltaHours} deltaRevenue={deltaRevenue} deltaRate={deltaRate}
+          deltaPayroll={deltaPayroll} deltaPayrollPct={deltaPayrollPct}
+        />
       </div>
     </div>
   );
