@@ -635,13 +635,10 @@ export default function App() {
     setUploadingSlot(prev => ({ ...prev, [periodKey]: kind }));
     try {
       const parsed = kind === 'hours' ? await parseHoursFile(file) : await parseSalesFile(file);
-      let next;
-      setPeriods(prev => {
-        const cur = prev[periodKey] || emptyPeriod;
-        next = { ...cur, [kind]: parsed };
-        if (!cur.label && parsed.dateRangeLabel) next.label = parsed.dateRangeLabel;
-        return { ...prev, [periodKey]: next };
-      });
+      const cur = periods[periodKey] || emptyPeriod;
+      const next = { ...cur, [kind]: parsed };
+      if (!cur.label && parsed.dateRangeLabel) next.label = parsed.dateRangeLabel;
+      setPeriods(prev => ({ ...prev, [periodKey]: next }));
       const result = await savePeriod(periodKey, next);
       if (isConfigured() && !result.ok) {
         showToast(`Loaded ${file.name}, but couldn't sync to Supabase (${result.error}) — only visible on this device`, 'error');
@@ -653,16 +650,13 @@ export default function App() {
     } finally {
       setUploadingSlot(prev => ({ ...prev, [periodKey]: null }));
     }
-  }, []);
+  }, [periods]);
 
   const handleLabelChange = useCallback((periodKey, text) => {
-    let next;
-    setPeriods(prev => {
-      next = { ...prev[periodKey], label: text };
-      return { ...prev, [periodKey]: next };
-    });
+    const next = { ...periods[periodKey], label: text };
+    setPeriods(prev => ({ ...prev, [periodKey]: next }));
     savePeriod(periodKey, next);
-  }, []);
+  }, [periods]);
 
   const handleClearAll = async () => {
     if (!window.confirm('Clear all uploaded files and start over? This cannot be undone.')) return;

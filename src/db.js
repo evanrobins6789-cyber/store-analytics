@@ -39,6 +39,10 @@ export async function loadPeriods() {
 // Save one period's payload ({ label, hours, sales }). Returns { ok, error }
 // — ok is true only if it actually reached Supabase when Supabase is configured.
 export async function savePeriod(periodId, payload) {
+  if (payload == null) {
+    console.error('savePeriod called with no payload for', periodId);
+    return { ok: false, error: 'Internal error: no data to save' };
+  }
   let error = null;
   if (supabase) {
     const res = await supabase
