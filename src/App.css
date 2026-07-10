@@ -276,7 +276,18 @@
 }
 .ledger-group-head--steel, .ledger-group-head--sage { border-left: 2.5px solid var(--brass); }
 .ledger-table th, .ledger-table td { padding: 9px 12px; text-align: right; white-space: nowrap; }
-.ledger-name-col { text-align: left !important; font-family: 'Work Sans', sans-serif; font-weight: 500; }
+.ledger-name-col {
+  text-align: left !important;
+  font-family: 'Work Sans', sans-serif;
+  font-weight: 500;
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--paper-card);
+  box-shadow: 2px 0 5px rgba(35,40,47,0.10);
+}
+.ledger-table tbody tr:nth-child(odd) .ledger-name-col { background: #F5EFDD; }
+.ledger-avg-row .ledger-name-col { background: #F1E4C6; }
 .ledger-table thead tr:first-child th { border-bottom: 1px solid var(--line); padding-bottom: 4px; font-family: 'Work Sans', sans-serif; font-size: 11.5px; color: var(--ink-soft); font-weight: 600; }
 .ledger-group-head { text-align: center !important; }
 .ledger-group-head--steel { color: var(--steel); }
@@ -284,6 +295,7 @@
 .ledger-subhead th { font-size: 10.5px; color: var(--ink-soft); font-weight: 500; padding-top: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .ledger-table tbody tr:nth-child(odd) { background: rgba(184,134,62,0.04); }
 .ledger-table tbody tr:hover { background: rgba(184,134,62,0.11); }
+.ledger-table tbody tr:hover .ledger-name-col { background: #F0E6C8; }
 .ledger-rate { font-weight: 600; }
 
 .ledger-footnote { font-size: 11.5px; color: var(--ink-soft); text-align: center; }
