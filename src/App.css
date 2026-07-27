@@ -130,7 +130,6 @@
 .upload-slot:hover { background: #FFF3E6; }
 .upload-slot--steel { border-color: color-mix(in srgb, var(--steel) 45%, var(--line)); }
 .upload-slot--sage  { border-color: color-mix(in srgb, var(--sage) 45%, var(--line)); }
-.upload-slot--brass { border-color: color-mix(in srgb, var(--brass) 45%, var(--line)); }
 .upload-slot--filled { border-style: solid; }
 .upload-slot--filled.upload-slot--steel { background: var(--steel-bg); border-color: var(--steel); }
 .upload-slot--filled.upload-slot--sage  { background: var(--sage-bg); border-color: var(--sage); }
@@ -332,6 +331,14 @@
   background: rgba(242,121,12,0.07); margin: 2px -8px 0; padding: 9px 8px; border-radius: 8px;
 }
 .pl-row--total .pl-row-value { color: var(--brass-deep); }
+.pl-fixed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-bottom: 14px; }
+@media (max-width: 480px) { .pl-fixed-grid { grid-template-columns: 1fr; } }
+.pl-fixed-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-soft); font-family: 'Work Sans', sans-serif; }
+.pl-fixed-field input {
+  background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius, 10px);
+  padding: 7px 10px; font-size: 13px; color: var(--ink); font-family: 'IBM Plex Mono', monospace;
+}
+.pl-fixed-field input:focus { outline: none; border-color: var(--brass); }
 
 /* ─── Setup tab ──────────────────────────────────────────────────────── */
 .setup-tab { max-width: 640px; }

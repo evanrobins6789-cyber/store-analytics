@@ -4,9 +4,8 @@ import {
   Chart as ChartJS,
   CategoryScale, LinearScale, BarElement, Tooltip, Legend
 } from 'chart.js';
-import { loadPeriods, savePeriod, clearPeriods, isConfigured, loadPLReports, savePLReport, deletePLReport, clearPLReports } from './db';
+import { loadPeriods, savePeriod, clearPeriods, isConfigured } from './db';
 import { parseHoursFile, parseSalesFile, normalizeEmployeeName } from './parser';
-import { parsePLFile } from './plParser';
 import { STORE_ROSTER } from './storeRoster';
 import { getHourlyRate, totalPay } from './hourlyRates';
 import './App.css';
@@ -91,6 +90,54 @@ function mergePeriod(hours, sales) {
     hasSales: !!sales,
     complete: !!hours && !!sales,
   };
+}
+
+// ─── P&L: fixed monthly expenses (entered once per store, reused every ────
+// ─── period until changed) plus store-level income/payroll rollups ────────
+const FIXED_EXPENSE_FIELDS = [
+  { key: 'rent', label: 'Rent (Occupancy Cost)' },
+  { key: 'utilities', label: 'Utilities' },
+  { key: 'insurance', label: 'Insurance' },
+  { key: 'licenses', label: 'Licenses & Permits' },
+  { key: 'alarmMonitoring', label: 'Alarm Monitoring' },
+  { key: 'accounting', label: 'Accounting' },
+  { key: 'bankFees', label: 'Bank Fees' },
+  { key: 'infoSystems', label: 'Information Systems' },
+  { key: 'royalties', label: 'Royalties' },
+  { key: 'supplies', label: 'Supplies' },
+  { key: 'advertising', label: 'Advertising' },
+  { key: 'maintenance', label: 'Maintenance' },
+  { key: 'paidouts', label: 'Paidouts' },
+  { key: 'refunds', label: 'Refunds' },
+];
+
+// storeName === null means "every store combined" (the company total).
+function storeIncomeAndPayroll(merged, storeName) {
+  if (!merged) return { serviceRevenue: 0, retailSales: 0, payroll: 0 };
+  if (storeName == null) {
+    return {
+      serviceRevenue: merged.totalRevenue || 0,
+      retailSales: merged.totalRetailSales || 0,
+      payroll: merged.totalPayroll || 0,
+    };
+  }
+  const emps = merged.employees.filter(e => STORE_ROSTER.storeByName[normalizeEmployeeName(e.name)] === storeName);
+  const serviceRevenue = emps.reduce((sum, e) => sum + (e.serviceRevenue || 0), 0);
+  const retailSales = emps.reduce((sum, e) => sum + (e.retailSales || 0), 0);
+  const payroll = emps.reduce((sum, e) => {
+    const rate = getHourlyRate(e.name);
+    const pay = totalPay(e.hoursDecimal, rate, e.retailSales);
+    return pay != null ? sum + pay : sum;
+  }, 0);
+  return { serviceRevenue, retailSales, payroll };
+}
+
+function fixedExpenseTotal(fixedExpenses, storeName) {
+  if (storeName == null) {
+    return STORE_ROSTER.stores.reduce((sum, s) => sum + fixedExpenseTotal(fixedExpenses, s.name), 0);
+  }
+  const vals = fixedExpenses?.[storeName] || {};
+  return FIXED_EXPENSE_FIELDS.reduce((sum, f) => sum + (Number(vals[f.key]) || 0), 0);
 }
 
 // ─── Signature element: a balance scale that tips toward the more ──────────
@@ -554,135 +601,156 @@ function ByStoreTab({ p1, p2, label1, label2 }) {
 }
 
 // ─── P&L tab ─────────────────────────────────────────────────────────────────
-function PLUploadSlot({ uploading, onFile }) {
+// Income and Compensation are computed live from the same Hours + Sales files
+// uploaded above (no separate upload for this tab). Fixed costs (rent,
+// insurance, etc.) don't come from any report — they're entered once per
+// store below and reused for every period until you change them.
+function PLPeriodCard({ label, serviceRevenue, retailSales, payroll, fixed, deltaIncome, deltaNet }) {
+  const income = serviceRevenue + retailSales;
+  const net = income - payroll - fixed;
+  const margin = income > 0 ? net / income : null;
   return (
-    <label htmlFor="pl-upload" className="upload-slot upload-slot--brass">
-      <input
-        id="pl-upload" type="file" accept=".xlsx,.xls,.csv"
-        onChange={e => { if (e.target.files[0]) onFile(e.target.files[0]); e.target.value = ''; }}
-        style={{ display: 'none' }}
-      />
-      <div className="upload-slot-icon">{uploading ? <span className="spinner small" /> : '+'}</div>
-      <div className="upload-slot-body">
-        <p className="upload-slot-title">Upload a monthly P&L / Contribution Report</p>
-        <p className="upload-slot-hint">Each upload adds (or replaces) that month — the month is read straight from the file, nothing to type in.</p>
+    <div className="summary-card">
+      <p className="period-name">{label}</p>
+      <div className="summary-row">
+        <span className="summary-label">Income (service + retail)</span>
+        <span className="summary-value">{fmt$(income)}</span>
+        {deltaIncome != null && <Badge curr={income} prev={income - deltaIncome} />}
       </div>
-    </label>
-  );
-}
-
-function PLRow({ row, locationKey }) {
-  const v = row.values[locationKey] || {};
-  if (row.isSectionHeader) return <p className="pl-section-title">{row.label}</p>;
-  return (
-    <div className={`pl-row ${row.isTotal ? 'pl-row--total' : ''}`}>
-      <span className="pl-row-label">{row.label}</span>
-      <span className="pl-row-value">{v.current != null ? fmt$(v.current) : '—'}</span>
-      <Badge curr={v.current} prev={v.prior} />
+      <div className="summary-row">
+        <span className="summary-label">Compensation</span>
+        <span className="summary-value">{fmt$(payroll)}</span>
+      </div>
+      <div className="summary-row">
+        <span className="summary-label">Fixed expenses</span>
+        <span className="summary-value">{fmt$(fixed)}</span>
+      </div>
+      <div className="summary-row summary-row--highlight">
+        <span className="summary-label">Net income</span>
+        <span className="summary-value">{fmt$(net)}</span>
+        {deltaNet != null && <Badge curr={net} prev={net - deltaNet} />}
+      </div>
+      <div className="summary-row">
+        <span className="summary-label">Net margin</span>
+        <span className="summary-value">{margin != null ? `${(margin * 100).toFixed(1)}%` : '—'}</span>
+      </div>
     </div>
   );
 }
 
-function PLTab({ reports, loading, uploading, onFile, onDeleteMonth }) {
-  const monthKeys = useMemo(() => Object.keys(reports).sort().reverse(), [reports]);
-  const [month, setMonth] = useState(null);
-  const [locationKey, setLocationKey] = useState(null);
+function PLStatement({ periodLabel, serviceRevenue, retailSales, payroll, fixedExpenses, storeName }) {
+  const income = serviceRevenue + retailSales;
+  const totalExpense = payroll + fixedExpenseTotal(fixedExpenses, storeName);
+  const netIncome = income - totalExpense;
+  const vals = storeName == null ? null : (fixedExpenses?.[storeName] || {});
+  const fixedRows = storeName == null
+    ? STORE_ROSTER.stores.map(s => ({ label: s.name, value: fixedExpenseTotal(fixedExpenses, s.name) }))
+    : FIXED_EXPENSE_FIELDS.map(f => ({ label: f.label, value: Number(vals[f.key]) || 0 }));
 
-  useEffect(() => {
-    if (!monthKeys.length) { setMonth(null); return; }
-    if (!month || !monthKeys.includes(month)) setMonth(monthKeys[0]);
-  }, [monthKeys, month]);
+  return (
+    <div className="chart-card">
+      <p className="chart-title">Full statement — {periodLabel}</p>
+      <div className="pl-statement">
+        <p className="pl-section-title">Income</p>
+        <div className="pl-row"><span className="pl-row-label">Service revenue</span><span className="pl-row-value">{fmt$(serviceRevenue)}</span></div>
+        <div className="pl-row"><span className="pl-row-label">Retail sales</span><span className="pl-row-value">{fmt$(retailSales)}</span></div>
+        <div className="pl-row pl-row--total"><span className="pl-row-label">Total Income</span><span className="pl-row-value">{fmt$(income)}</span></div>
 
-  const report = month ? reports[month] : null;
+        <p className="pl-section-title">Expense</p>
+        <div className="pl-row"><span className="pl-row-label">Compensation</span><span className="pl-row-value">{fmt$(payroll)}</span></div>
+        <p className="pl-section-title">{storeName == null ? 'Fixed expenses by store' : 'Fixed expenses'}</p>
+        {fixedRows.map(r => (
+          <div className="pl-row" key={r.label}><span className="pl-row-label">{r.label}</span><span className="pl-row-value">{fmt$(r.value)}</span></div>
+        ))}
+        <div className="pl-row pl-row--total"><span className="pl-row-label">Total Expense</span><span className="pl-row-value">{fmt$(totalExpense)}</span></div>
 
-  useEffect(() => {
-    if (!report) { setLocationKey(null); return; }
-    const keys = report.locations.map(l => l.key);
-    if (!locationKey || !keys.includes(locationKey)) {
-      setLocationKey(keys.find(k => k === 'TOTAL') || keys.find(k => k === 'Total WTC') || keys[0]);
-    }
-  }, [report, locationKey]);
-
-  if (loading) return <div className="app-loading"><div className="spinner large" /></div>;
-
-  if (!monthKeys.length) {
-    return (
-      <div className="tab-content">
-        <PLUploadSlot uploading={uploading} onFile={onFile} />
-        <div className="empty-state">
-          <p className="empty-title">No P&L uploaded yet</p>
-          <p>Upload your monthly Contribution Report / P&L export above and it'll be broken down by store automatically.</p>
-        </div>
+        <div className="pl-row pl-row--total"><span className="pl-row-label">Net Income</span><span className="pl-row-value">{fmt$(netIncome)}</span></div>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
-  const locMeta = report.locations.find(l => l.key === locationKey);
-  const findRow = label => report.rows.find(r => r.label === label);
-  const totalIncomeRow = findRow('Total Income');
-  const totalExpenseRow = findRow('Total Expense');
-  const netIncomeRow = findRow('Net Income');
-  const vCur = row => row?.values[locationKey]?.current ?? null;
-  const vPrior = row => row?.values[locationKey]?.prior ?? null;
-  const totalIncome = vCur(totalIncomeRow);
-  const totalExpense = vCur(totalExpenseRow);
-  const netIncome = vCur(netIncomeRow);
-  const netMargin = (totalIncome != null && totalIncome !== 0 && netIncome != null) ? netIncome / totalIncome : null;
+function FixedExpensesForm({ storeName, values, onSave }) {
+  const [draft, setDraft] = useState(() => ({ ...values }));
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { setDraft({ ...values }); }, [storeName]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSave = async () => {
+    setSaving(true);
+    const clean = {};
+    FIXED_EXPENSE_FIELDS.forEach(f => { clean[f.key] = Number(draft[f.key]) || 0; });
+    await onSave(storeName, clean);
+    setDraft(clean);
+    setSaving(false);
+  };
+
+  return (
+    <div className="chart-card">
+      <p className="chart-title">Fixed monthly expenses — {storeName}</p>
+      <div className="pl-fixed-grid">
+        {FIXED_EXPENSE_FIELDS.map(f => (
+          <label key={f.key} className="pl-fixed-field">
+            <span>{f.label}</span>
+            <input
+              type="number" inputMode="decimal" placeholder="0"
+              value={draft[f.key] ?? ''}
+              onChange={e => setDraft(prev => ({ ...prev, [f.key]: e.target.value }))}
+            />
+          </label>
+        ))}
+      </div>
+      <button className="btn-ghost btn-sm" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save fixed expenses'}</button>
+    </div>
+  );
+}
+
+function PLTab({ p1, p2, label1, label2, fixedExpenses, onSaveFixedExpenses }) {
+  const [storeSel, setStoreSel] = useState(''); // '' = All Stores
+  const [focusPeriod, setFocusPeriod] = useState('p2');
+  const selectedStore = storeSel === '' ? null : storeSel;
+
+  const m1 = storeIncomeAndPayroll(p1, selectedStore);
+  const m2 = storeIncomeAndPayroll(p2, selectedStore);
+  const fixed = fixedExpenseTotal(fixedExpenses, selectedStore);
+  const income1 = m1.serviceRevenue + m1.retailSales;
+  const income2 = m2.serviceRevenue + m2.retailSales;
+  const net1 = income1 - m1.payroll - fixed;
+  const net2 = income2 - m2.payroll - fixed;
+
+  const focus = focusPeriod === 'p1' ? { label: label1, ...m1 } : { label: label2, ...m2 };
 
   return (
     <div className="tab-content">
       <div className="pl-toolbar">
+        <select className="sort-select" value={storeSel} onChange={e => setStoreSel(e.target.value)}>
+          <option value="">All Stores</option>
+          {STORE_ROSTER.stores.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+        </select>
+      </div>
+
+      <div className="period-compare-grid">
+        <PLPeriodCard label={label1} serviceRevenue={m1.serviceRevenue} retailSales={m1.retailSales} payroll={m1.payroll} fixed={fixed} />
+        <PLPeriodCard
+          label={label2} serviceRevenue={m2.serviceRevenue} retailSales={m2.retailSales} payroll={m2.payroll} fixed={fixed}
+          deltaIncome={income2 - income1} deltaNet={net2 - net1}
+        />
+      </div>
+
+      <div className="pl-toolbar">
         <div className="pl-toolbar-selects">
-          {monthKeys.length > 1 && (
-            <select className="sort-select" value={month} onChange={e => setMonth(e.target.value)}>
-              {monthKeys.map(k => <option key={k} value={k}>{reports[k].monthDisplay || k}</option>)}
-            </select>
-          )}
-          <select className="sort-select" value={locationKey || ''} onChange={e => setLocationKey(e.target.value)}>
-            {report.locations.map(l => <option key={l.key} value={l.key}>{l.label}</option>)}
-          </select>
-        </div>
-        <button className="btn-ghost btn-sm" onClick={() => onDeleteMonth(month)}>Remove this month</button>
-      </div>
-
-      <PLUploadSlot uploading={uploading} onFile={onFile} />
-
-      <div className="summary-card">
-        <p className="period-name">{locMeta?.label} — {report.monthDisplay}</p>
-        <div className="summary-row">
-          <span className="summary-label">Total income</span>
-          <span className="summary-value">{totalIncome != null ? fmt$(totalIncome) : '—'}</span>
-          <Badge curr={totalIncome} prev={vPrior(totalIncomeRow)} />
-        </div>
-        <div className="summary-row">
-          <span className="summary-label">Total expense</span>
-          <span className="summary-value">{totalExpense != null ? fmt$(totalExpense) : '—'}</span>
-          <Badge curr={totalExpense} prev={vPrior(totalExpenseRow)} />
-        </div>
-        <div className="summary-row summary-row--highlight">
-          <span className="summary-label">Net income</span>
-          <span className="summary-value">{netIncome != null ? fmt$(netIncome) : '—'}</span>
-          <Badge curr={netIncome} prev={vPrior(netIncomeRow)} />
-        </div>
-        <div className="summary-row">
-          <span className="summary-label">Net margin</span>
-          <span className="summary-value">{netMargin != null ? `${(netMargin * 100).toFixed(1)}%` : '—'}</span>
+          <button className={`tab-btn ${focusPeriod === 'p1' ? 'active' : ''}`} onClick={() => setFocusPeriod('p1')}>{label1}</button>
+          <button className={`tab-btn ${focusPeriod === 'p2' ? 'active' : ''}`} onClick={() => setFocusPeriod('p2')}>{label2}</button>
         </div>
       </div>
+      <PLStatement
+        periodLabel={focus.label} serviceRevenue={focus.serviceRevenue} retailSales={focus.retailSales}
+        payroll={focus.payroll} fixedExpenses={fixedExpenses} storeName={selectedStore}
+      />
 
-      {netMargin != null && (
-        <p className="narrative">
-          <strong>{locMeta?.label}</strong> ran a <strong>{(netMargin * 100).toFixed(1)}%</strong> net margin in <strong>{report.monthDisplay}</strong>
-          {report.priorLabel ? <> (vs. <strong>{report.priorLabel}</strong> last year)</> : null}.
-        </p>
+      {selectedStore != null && (
+        <FixedExpensesForm storeName={selectedStore} values={fixedExpenses?.[selectedStore] || {}} onSave={onSaveFixedExpenses} />
       )}
-
-      <div className="chart-card">
-        <p className="chart-title">Full statement — {locMeta?.label}</p>
-        <div className="pl-statement">
-          {report.rows.map((row, i) => <PLRow key={i} row={row} locationKey={locationKey} />)}
-        </div>
-      </div>
     </div>
   );
 }
@@ -747,9 +815,7 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [uploadingSlot, setUploadingSlot] = useState({}); // { period1: 'hours'|'sales'|null, ... }
   const [panelOpen, setPanelOpen] = useState(true);
-  const [plReports, setPlReports] = useState({}); // { [monthKey]: parsed P&L report }
-  const [plLoading, setPlLoading] = useState(true);
-  const [plUploading, setPlUploading] = useState(false);
+  const [fixedExpenses, setFixedExpenses] = useState({}); // { [storeName]: { rent, utilities, ... } }
 
   useEffect(() => {
     loadPeriods().then(({ data: saved, source, error }) => {
@@ -757,21 +823,12 @@ export default function App() {
         period1: { ...emptyPeriod, ...(saved.period1 || {}) },
         period2: { ...emptyPeriod, ...(saved.period2 || {}) },
       });
+      setFixedExpenses(saved.fixed_expenses || {});
       setLoading(false);
       if (isConfigured() && source === 'local') {
         showToast(`Couldn't reach Supabase (${error || 'unknown error'}) — showing this device's local data only`, 'error');
       }
     }).catch(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    loadPLReports().then(({ data: saved, source, error }) => {
-      setPlReports(saved || {});
-      setPlLoading(false);
-      if (isConfigured() && source === 'local') {
-        showToast(`Couldn't reach Supabase for P&L data (${error || 'unknown error'}) — showing this device's local data only`, 'error');
-      }
-    }).catch(() => setPlLoading(false));
   }, []);
 
   const showToast = (msg, type = 'success') => {
@@ -809,44 +866,27 @@ export default function App() {
   const handleClearAll = async () => {
     if (!window.confirm('Clear all uploaded files and start over? This cannot be undone.')) return;
     await clearPeriods();
-    await clearPLReports();
     setPeriods({ period1: emptyPeriod, period2: emptyPeriod });
-    setPlReports({});
     setPanelOpen(true);
     showToast('All data cleared');
   };
 
-  const handlePLFile = useCallback(async (file) => {
-    setPlUploading(true);
-    try {
-      const parsed = await parsePLFile(file);
-      setPlReports(prev => ({ ...prev, [parsed.monthKey]: parsed }));
-      const result = await savePLReport(parsed.monthKey, parsed);
-      if (isConfigured() && !result.ok) {
-        showToast(`Loaded ${file.name}, but couldn't sync to Supabase (${result.error}) — only visible on this device`, 'error');
-      } else {
-        showToast(`Loaded ${file.name} — ${parsed.monthDisplay} P&L ready`);
-      }
-    } catch (err) {
-      showToast(err.message, 'error');
-    } finally {
-      setPlUploading(false);
+  const handleSaveFixedExpenses = useCallback(async (storeName, values) => {
+    const next = { ...fixedExpenses, [storeName]: values };
+    setFixedExpenses(next);
+    const result = await savePeriod('fixed_expenses', next);
+    if (isConfigured() && !result.ok) {
+      showToast(`Saved locally, but couldn't sync to Supabase (${result.error})`, 'error');
+    } else {
+      showToast(`${storeName} fixed expenses saved`);
     }
-  }, []);
-
-  const handleDeletePLMonth = useCallback(async (monthKey) => {
-    if (!monthKey) return;
-    if (!window.confirm(`Remove the ${plReports[monthKey]?.monthDisplay || monthKey} P&L? This cannot be undone.`)) return;
-    await deletePLReport(monthKey);
-    setPlReports(prev => { const next = { ...prev }; delete next[monthKey]; return next; });
-    showToast('Removed');
-  }, [plReports]);
+  }, [fixedExpenses]);
 
   const merged1 = useMemo(() => mergePeriod(periods.period1?.hours, periods.period1?.sales), [periods.period1]);
   const merged2 = useMemo(() => mergePeriod(periods.period2?.hours, periods.period2?.sales), [periods.period2]);
   const label1 = periods.period1?.label || 'Period 1';
   const label2 = periods.period2?.label || 'Period 2';
-  const hasAnyData = !!(periods.period1?.hours || periods.period1?.sales || periods.period2?.hours || periods.period2?.sales || Object.keys(plReports).length > 0);
+  const hasAnyData = !!(periods.period1?.hours || periods.period1?.sales || periods.period2?.hours || periods.period2?.sales);
   const bothComplete = merged1?.complete && merged2?.complete;
 
   if (loading) return <div className="app-loading"><div className="spinner large" /></div>;
@@ -906,8 +946,8 @@ export default function App() {
         {tab === 'By Store' && <ByStoreTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
         {tab === 'P&L' && (
           <PLTab
-            reports={plReports} loading={plLoading} uploading={plUploading}
-            onFile={handlePLFile} onDeleteMonth={handleDeletePLMonth}
+            p1={merged1} p2={merged2} label1={label1} label2={label2}
+            fixedExpenses={fixedExpenses} onSaveFixedExpenses={handleSaveFixedExpenses}
           />
         )}
         {tab === 'Setup' && <SetupTab configured={isConfigured()} />}

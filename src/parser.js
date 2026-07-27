@@ -6,7 +6,7 @@ import * as XLSX from 'xlsx';
 // free-floating text rows above the real table, and we need both the raw
 // value (.v) and the display text (.w, e.g. "45:08") for each cell.
 
-export function sheetToGrid(ws) {
+function sheetToGrid(ws) {
   const ref = ws['!ref'];
   if (!ref) return [];
   const range = XLSX.utils.decode_range(ref);
@@ -26,7 +26,7 @@ export function sheetToGrid(ws) {
   return grid;
 }
 
-export function cellText(cell) {
+function cellText(cell) {
   return String(cell?.w ?? '').trim();
 }
 
@@ -117,7 +117,7 @@ function parseHoursCell(cell) {
   return null;
 }
 
-export function readWorkbookGrid(file) {
+function readWorkbookGrid(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = ev => {
