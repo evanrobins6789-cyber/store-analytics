@@ -674,7 +674,7 @@ function FixedExpensesForm({ storeName, values, onSave }) {
   const [draft, setDraft] = useState(() => ({ ...values }));
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => { setDraft({ ...values }); }, [storeName]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setDraft({ ...values }); }, [storeName]); // eslint-disable-line
 
   const handleSave = async () => {
     setSaving(true);
