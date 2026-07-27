@@ -64,3 +64,53 @@ export async function clearPeriods() {
   }
   localStorage.removeItem(LOCAL_KEY);
 }
+
+// ─── P&L reports ─────────────────────────────────────────────────────────
+// Stored in the same `periods` table (keyed `pl:<monthKey>`) so there's no
+// extra Supabase setup step — one uploaded report per calendar month.
+
+function readLocalPL() {
+  const all = readLocal();
+  const out = {};
+  Object.keys(all).forEach(k => { if (k.startsWith('pl:')) out[k.slice(3)] = all[k]; });
+  return out;
+}
+
+export async function loadPLReports() {
+  if (supabase) {
+    const { data, error } = await supabase.from('periods').select('*').like('period_id', 'pl:%');
+    if (!error && data) {
+      const out = {};
+      data.forEach(row => { out[row.period_id.slice(3)] = row.payload; });
+      return { data: out, source: 'supabase', error: null };
+    }
+    return { data: readLocalPL(), source: 'local', error: error?.message || 'Unknown Supabase error' };
+  }
+  return { data: readLocalPL(), source: 'local', error: null };
+}
+
+export async function savePLReport(monthKey, payload) {
+  return savePeriod(`pl:${monthKey}`, payload);
+}
+
+export async function deletePLReport(monthKey) {
+  if (supabase) {
+    await supabase.from('periods').delete().eq('period_id', `pl:${monthKey}`);
+  }
+  try {
+    const all = readLocal();
+    delete all[`pl:${monthKey}`];
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(all));
+  } catch {}
+}
+
+export async function clearPLReports() {
+  if (supabase) {
+    await supabase.from('periods').delete().like('period_id', 'pl:%');
+  }
+  try {
+    const all = readLocal();
+    Object.keys(all).forEach(k => { if (k.startsWith('pl:')) delete all[k]; });
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(all));
+  } catch {}
+}

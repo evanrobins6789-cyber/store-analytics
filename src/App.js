@@ -4,8 +4,9 @@ import {
   Chart as ChartJS,
   CategoryScale, LinearScale, BarElement, Tooltip, Legend
 } from 'chart.js';
-import { loadPeriods, savePeriod, clearPeriods, isConfigured } from './db';
+import { loadPeriods, savePeriod, clearPeriods, isConfigured, loadPLReports, savePLReport, deletePLReport, clearPLReports } from './db';
 import { parseHoursFile, parseSalesFile, normalizeEmployeeName } from './parser';
+import { parsePLFile } from './plParser';
 import { STORE_ROSTER } from './storeRoster';
 import { getHourlyRate, totalPay } from './hourlyRates';
 import './App.css';
@@ -552,6 +553,140 @@ function ByStoreTab({ p1, p2, label1, label2 }) {
   );
 }
 
+// ─── P&L tab ─────────────────────────────────────────────────────────────────
+function PLUploadSlot({ uploading, onFile }) {
+  return (
+    <label htmlFor="pl-upload" className="upload-slot upload-slot--brass">
+      <input
+        id="pl-upload" type="file" accept=".xlsx,.xls,.csv"
+        onChange={e => { if (e.target.files[0]) onFile(e.target.files[0]); e.target.value = ''; }}
+        style={{ display: 'none' }}
+      />
+      <div className="upload-slot-icon">{uploading ? <span className="spinner small" /> : '+'}</div>
+      <div className="upload-slot-body">
+        <p className="upload-slot-title">Upload a monthly P&L / Contribution Report</p>
+        <p className="upload-slot-hint">Each upload adds (or replaces) that month — the month is read straight from the file, nothing to type in.</p>
+      </div>
+    </label>
+  );
+}
+
+function PLRow({ row, locationKey }) {
+  const v = row.values[locationKey] || {};
+  if (row.isSectionHeader) return <p className="pl-section-title">{row.label}</p>;
+  return (
+    <div className={`pl-row ${row.isTotal ? 'pl-row--total' : ''}`}>
+      <span className="pl-row-label">{row.label}</span>
+      <span className="pl-row-value">{v.current != null ? fmt$(v.current) : '—'}</span>
+      <Badge curr={v.current} prev={v.prior} />
+    </div>
+  );
+}
+
+function PLTab({ reports, loading, uploading, onFile, onDeleteMonth }) {
+  const monthKeys = useMemo(() => Object.keys(reports).sort().reverse(), [reports]);
+  const [month, setMonth] = useState(null);
+  const [locationKey, setLocationKey] = useState(null);
+
+  useEffect(() => {
+    if (!monthKeys.length) { setMonth(null); return; }
+    if (!month || !monthKeys.includes(month)) setMonth(monthKeys[0]);
+  }, [monthKeys, month]);
+
+  const report = month ? reports[month] : null;
+
+  useEffect(() => {
+    if (!report) { setLocationKey(null); return; }
+    const keys = report.locations.map(l => l.key);
+    if (!locationKey || !keys.includes(locationKey)) {
+      setLocationKey(keys.find(k => k === 'TOTAL') || keys.find(k => k === 'Total WTC') || keys[0]);
+    }
+  }, [report, locationKey]);
+
+  if (loading) return <div className="app-loading"><div className="spinner large" /></div>;
+
+  if (!monthKeys.length) {
+    return (
+      <div className="tab-content">
+        <PLUploadSlot uploading={uploading} onFile={onFile} />
+        <div className="empty-state">
+          <p className="empty-title">No P&L uploaded yet</p>
+          <p>Upload your monthly Contribution Report / P&L export above and it'll be broken down by store automatically.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const locMeta = report.locations.find(l => l.key === locationKey);
+  const findRow = label => report.rows.find(r => r.label === label);
+  const totalIncomeRow = findRow('Total Income');
+  const totalExpenseRow = findRow('Total Expense');
+  const netIncomeRow = findRow('Net Income');
+  const vCur = row => row?.values[locationKey]?.current ?? null;
+  const vPrior = row => row?.values[locationKey]?.prior ?? null;
+  const totalIncome = vCur(totalIncomeRow);
+  const totalExpense = vCur(totalExpenseRow);
+  const netIncome = vCur(netIncomeRow);
+  const netMargin = (totalIncome != null && totalIncome !== 0 && netIncome != null) ? netIncome / totalIncome : null;
+
+  return (
+    <div className="tab-content">
+      <div className="pl-toolbar">
+        <div className="pl-toolbar-selects">
+          {monthKeys.length > 1 && (
+            <select className="sort-select" value={month} onChange={e => setMonth(e.target.value)}>
+              {monthKeys.map(k => <option key={k} value={k}>{reports[k].monthDisplay || k}</option>)}
+            </select>
+          )}
+          <select className="sort-select" value={locationKey || ''} onChange={e => setLocationKey(e.target.value)}>
+            {report.locations.map(l => <option key={l.key} value={l.key}>{l.label}</option>)}
+          </select>
+        </div>
+        <button className="btn-ghost btn-sm" onClick={() => onDeleteMonth(month)}>Remove this month</button>
+      </div>
+
+      <PLUploadSlot uploading={uploading} onFile={onFile} />
+
+      <div className="summary-card">
+        <p className="period-name">{locMeta?.label} — {report.monthDisplay}</p>
+        <div className="summary-row">
+          <span className="summary-label">Total income</span>
+          <span className="summary-value">{totalIncome != null ? fmt$(totalIncome) : '—'}</span>
+          <Badge curr={totalIncome} prev={vPrior(totalIncomeRow)} />
+        </div>
+        <div className="summary-row">
+          <span className="summary-label">Total expense</span>
+          <span className="summary-value">{totalExpense != null ? fmt$(totalExpense) : '—'}</span>
+          <Badge curr={totalExpense} prev={vPrior(totalExpenseRow)} />
+        </div>
+        <div className="summary-row summary-row--highlight">
+          <span className="summary-label">Net income</span>
+          <span className="summary-value">{netIncome != null ? fmt$(netIncome) : '—'}</span>
+          <Badge curr={netIncome} prev={vPrior(netIncomeRow)} />
+        </div>
+        <div className="summary-row">
+          <span className="summary-label">Net margin</span>
+          <span className="summary-value">{netMargin != null ? `${(netMargin * 100).toFixed(1)}%` : '—'}</span>
+        </div>
+      </div>
+
+      {netMargin != null && (
+        <p className="narrative">
+          <strong>{locMeta?.label}</strong> ran a <strong>{(netMargin * 100).toFixed(1)}%</strong> net margin in <strong>{report.monthDisplay}</strong>
+          {report.priorLabel ? <> (vs. <strong>{report.priorLabel}</strong> last year)</> : null}.
+        </p>
+      )}
+
+      <div className="chart-card">
+        <p className="chart-title">Full statement — {locMeta?.label}</p>
+        <div className="pl-statement">
+          {report.rows.map((row, i) => <PLRow key={i} row={row} locationKey={locationKey} />)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Setup tab ──────────────────────────────────────────────────────────────
 function SetupTab({ configured }) {
   const steps = [
@@ -602,7 +737,7 @@ create policy "Allow all access"
 }
 
 // ─── App ────────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Employee Performance', 'By Store', 'Setup'];
+const TABS = ['Overview', 'Employee Performance', 'By Store', 'P&L', 'Setup'];
 const emptyPeriod = { label: '', hours: null, sales: null };
 
 export default function App() {
@@ -612,6 +747,9 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [uploadingSlot, setUploadingSlot] = useState({}); // { period1: 'hours'|'sales'|null, ... }
   const [panelOpen, setPanelOpen] = useState(true);
+  const [plReports, setPlReports] = useState({}); // { [monthKey]: parsed P&L report }
+  const [plLoading, setPlLoading] = useState(true);
+  const [plUploading, setPlUploading] = useState(false);
 
   useEffect(() => {
     loadPeriods().then(({ data: saved, source, error }) => {
@@ -624,6 +762,16 @@ export default function App() {
         showToast(`Couldn't reach Supabase (${error || 'unknown error'}) — showing this device's local data only`, 'error');
       }
     }).catch(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    loadPLReports().then(({ data: saved, source, error }) => {
+      setPlReports(saved || {});
+      setPlLoading(false);
+      if (isConfigured() && source === 'local') {
+        showToast(`Couldn't reach Supabase for P&L data (${error || 'unknown error'}) — showing this device's local data only`, 'error');
+      }
+    }).catch(() => setPlLoading(false));
   }, []);
 
   const showToast = (msg, type = 'success') => {
@@ -661,16 +809,44 @@ export default function App() {
   const handleClearAll = async () => {
     if (!window.confirm('Clear all uploaded files and start over? This cannot be undone.')) return;
     await clearPeriods();
+    await clearPLReports();
     setPeriods({ period1: emptyPeriod, period2: emptyPeriod });
+    setPlReports({});
     setPanelOpen(true);
     showToast('All data cleared');
   };
+
+  const handlePLFile = useCallback(async (file) => {
+    setPlUploading(true);
+    try {
+      const parsed = await parsePLFile(file);
+      setPlReports(prev => ({ ...prev, [parsed.monthKey]: parsed }));
+      const result = await savePLReport(parsed.monthKey, parsed);
+      if (isConfigured() && !result.ok) {
+        showToast(`Loaded ${file.name}, but couldn't sync to Supabase (${result.error}) — only visible on this device`, 'error');
+      } else {
+        showToast(`Loaded ${file.name} — ${parsed.monthDisplay} P&L ready`);
+      }
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setPlUploading(false);
+    }
+  }, []);
+
+  const handleDeletePLMonth = useCallback(async (monthKey) => {
+    if (!monthKey) return;
+    if (!window.confirm(`Remove the ${plReports[monthKey]?.monthDisplay || monthKey} P&L? This cannot be undone.`)) return;
+    await deletePLReport(monthKey);
+    setPlReports(prev => { const next = { ...prev }; delete next[monthKey]; return next; });
+    showToast('Removed');
+  }, [plReports]);
 
   const merged1 = useMemo(() => mergePeriod(periods.period1?.hours, periods.period1?.sales), [periods.period1]);
   const merged2 = useMemo(() => mergePeriod(periods.period2?.hours, periods.period2?.sales), [periods.period2]);
   const label1 = periods.period1?.label || 'Period 1';
   const label2 = periods.period2?.label || 'Period 2';
-  const hasAnyData = !!(periods.period1?.hours || periods.period1?.sales || periods.period2?.hours || periods.period2?.sales);
+  const hasAnyData = !!(periods.period1?.hours || periods.period1?.sales || periods.period2?.hours || periods.period2?.sales || Object.keys(plReports).length > 0);
   const bothComplete = merged1?.complete && merged2?.complete;
 
   if (loading) return <div className="app-loading"><div className="spinner large" /></div>;
@@ -719,25 +895,23 @@ export default function App() {
         </button>
       )}
 
-      {hasAnyData ? (
-        <>
-          <nav className="tab-nav">
-            {TABS.map(t => (
-              <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>{t}</button>
-            ))}
-          </nav>
-          <main className="app-main">
-            {tab === 'Overview' && <OverviewTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
-            {tab === 'Employee Performance' && <EmployeesTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
-            {tab === 'By Store' && <ByStoreTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
-            {tab === 'Setup' && <SetupTab configured={isConfigured()} />}
-          </main>
-        </>
-      ) : (
-        <main className="app-main">
-          <SetupTab configured={isConfigured()} />
-        </main>
-      )}
+      <nav className="tab-nav">
+        {TABS.map(t => (
+          <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>{t}</button>
+        ))}
+      </nav>
+      <main className="app-main">
+        {tab === 'Overview' && <OverviewTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
+        {tab === 'Employee Performance' && <EmployeesTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
+        {tab === 'By Store' && <ByStoreTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
+        {tab === 'P&L' && (
+          <PLTab
+            reports={plReports} loading={plLoading} uploading={plUploading}
+            onFile={handlePLFile} onDeleteMonth={handleDeletePLMonth}
+          />
+        )}
+        {tab === 'Setup' && <SetupTab configured={isConfigured()} />}
+      </main>
     </div>
   );
 }

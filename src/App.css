@@ -130,6 +130,7 @@
 .upload-slot:hover { background: #FFF3E6; }
 .upload-slot--steel { border-color: color-mix(in srgb, var(--steel) 45%, var(--line)); }
 .upload-slot--sage  { border-color: color-mix(in srgb, var(--sage) 45%, var(--line)); }
+.upload-slot--brass { border-color: color-mix(in srgb, var(--brass) 45%, var(--line)); }
 .upload-slot--filled { border-style: solid; }
 .upload-slot--filled.upload-slot--steel { background: var(--steel-bg); border-color: var(--steel); }
 .upload-slot--filled.upload-slot--sage  { background: var(--sage-bg); border-color: var(--sage); }
@@ -308,6 +309,29 @@
 .unmatched-hint { font-size: 12px; color: var(--ink-soft); margin: 4px 0 8px; }
 .unmatched-box ul { padding-left: 18px; }
 .unmatched-box li { font-size: 12px; color: var(--ink); margin-bottom: 2px; }
+
+/* ─── P&L tab ────────────────────────────────────────────────────────── */
+.pl-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.pl-toolbar-selects { display: flex; gap: 8px; flex-wrap: wrap; }
+.pl-statement { display: flex; flex-direction: column; }
+.pl-section-title {
+  font-family: 'Work Sans', sans-serif; font-size: 11px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--brass-deep);
+  margin: 16px 0 4px;
+}
+.pl-statement > .pl-section-title:first-child { margin-top: 0; }
+.pl-row {
+  display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+  padding: 7px 0; border-top: 1px dotted var(--line); font-size: 13px;
+}
+.pl-row:first-of-type { border-top: none; }
+.pl-row-label { color: var(--ink); flex: 1; text-align: left; }
+.pl-row-value { font-family: 'IBM Plex Mono', monospace; font-weight: 500; color: var(--ink); white-space: nowrap; }
+.pl-row--total {
+  font-weight: 700; border-top: 2px solid var(--brass);
+  background: rgba(242,121,12,0.07); margin: 2px -8px 0; padding: 9px 8px; border-radius: 8px;
+}
+.pl-row--total .pl-row-value { color: var(--brass-deep); }
 
 /* ─── Setup tab ──────────────────────────────────────────────────────── */
 .setup-tab { max-width: 640px; }
