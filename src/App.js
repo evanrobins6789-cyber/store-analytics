@@ -437,19 +437,19 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
   const chartData = {
     labels: chartRows.map(r => r.name),
     datasets: [
-      { label: label1, data: chartRows.map(r => r.p1?.revPerHour != null ? Math.round(r.p1.revPerHour * 100) / 100 : null), backgroundColor: '#4B6C87', borderRadius: 4 },
-      { label: label2, data: chartRows.map(r => r.p2?.revPerHour != null ? Math.round(r.p2.revPerHour * 100) / 100 : null), backgroundColor: '#5C7A63', borderRadius: 4 },
+      { label: label1, data: chartRows.map(r => r.p1?.revPerHour != null ? Math.round(r.p1.revPerHour * 100) / 100 : null), backgroundColor: '#C25E00', borderRadius: 4 },
+      { label: label2, data: chartRows.map(r => r.p2?.revPerHour != null ? Math.round(r.p2.revPerHour * 100) / 100 : null), backgroundColor: '#F2A153', borderRadius: 4 },
     ],
   };
   const chartOpts = {
     indexAxis: 'y', responsive: true, maintainAspectRatio: false,
     plugins: {
-      legend: { position: 'top', labels: { color: '#5b6270', font: { size: 11, family: 'Work Sans' }, boxWidth: 12 } },
+      legend: { position: 'top', labels: { color: '#6e655d', font: { size: 11, family: 'Work Sans' }, boxWidth: 12 } },
       tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmtRate(ctx.parsed.x)}` } },
     },
     scales: {
-      x: { grid: { color: 'rgba(35,40,47,0.06)' }, ticks: { color: '#5b6270', callback: v => '$' + v, font: { size: 10, family: 'IBM Plex Mono' } } },
-      y: { grid: { display: false }, ticks: { color: '#23282f', font: { size: 11, family: 'Work Sans' } } },
+      x: { grid: { color: 'rgba(42,36,32,0.06)' }, ticks: { color: '#6e655d', callback: v => '$' + v, font: { size: 10, family: 'IBM Plex Mono' } } },
+      y: { grid: { display: false }, ticks: { color: '#2a2420', font: { size: 11, family: 'Work Sans' } } },
     },
   };
 
