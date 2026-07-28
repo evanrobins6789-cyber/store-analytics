@@ -649,22 +649,20 @@ function ByStoreTab({ p1, p2, label1, label2 }) {
 }
 
 // ─── P&L tab ─────────────────────────────────────────────────────────────────
-// Income comes from the store collection summary report's Total Collection
-// (broken into the categories that sum to it). Compensation is computed live
-// from the same Hours + Sales files used elsewhere in the app. Fixed costs
-// (rent, tech fees, bank fees, royalties, etc.) don't come from any report —
-// they're entered once per store below and reused for every period until
-// you change them.
-function PLPeriodCard({ label, income, payroll, fixed, deltaIncome, deltaNet }) {
+// Current period only (no prior-period comparison) — income comes from the
+// store collection summary report's Total Collection (broken into the
+// categories that sum to it). Compensation is computed live from the same
+// Hours + Sales files used elsewhere in the app. Fixed costs (rent, tech
+// fees, bank fees, royalties, etc.) don't come from any report — they're
+// entered once per store below and reused every time until you change them.
+function PLSummaryCard({ income, payroll, fixed }) {
   const net = income - payroll - fixed;
   const margin = income > 0 ? net / income : null;
   return (
     <div className="summary-card">
-      <p className="period-name">{label}</p>
       <div className="summary-row">
         <span className="summary-label">Total Collection</span>
         <span className="summary-value">{fmt$(income)}</span>
-        {deltaIncome != null && <Badge curr={income} prev={income - deltaIncome} />}
       </div>
       <div className="summary-row">
         <span className="summary-label">Compensation</span>
@@ -677,7 +675,6 @@ function PLPeriodCard({ label, income, payroll, fixed, deltaIncome, deltaNet }) 
       <div className="summary-row summary-row--highlight">
         <span className="summary-label">Net income</span>
         <span className="summary-value">{fmt$(net)}</span>
-        {deltaNet != null && <Badge curr={net} prev={net - deltaNet} />}
       </div>
       <div className="summary-row">
         <span className="summary-label">Net margin</span>
@@ -700,7 +697,7 @@ function StatementRow({ label, value, pctBase, bold }) {
   );
 }
 
-function PLStatement({ periodLabel, incomeValues, income, payroll, fixedExpenses, storeName }) {
+function PLStatement({ incomeValues, income, payroll, fixedExpenses, storeName }) {
   const fixedRows = FIXED_EXPENSE_FIELDS.map(f => ({
     label: f.label,
     value: fixedExpenseCategoryValue(fixedExpenses, storeName, f.key),
@@ -711,7 +708,7 @@ function PLStatement({ periodLabel, incomeValues, income, payroll, fixedExpenses
 
   return (
     <div className="chart-card">
-      <p className="chart-title">Full statement — {periodLabel}</p>
+      <p className="chart-title">Full statement</p>
       <div className="pl-statement">
         <div className="pl-row pl-row-head"><span className="pl-row-label" /><span className="pl-row-pct">% Income</span><span className="pl-row-value">Amount</span></div>
         <p className="pl-section-title">Income (Total Collection)</p>
@@ -767,45 +764,24 @@ function FixedExpensesForm({ storeName, values, onSave }) {
   );
 }
 
-// One store's (or the combined) whole P&L block: two-period summary,
-// a period toggle, the itemized statement, and — for a real store — its
-// fixed-expenses edit form. storeName === null renders the combined total.
-function StorePLSection({ storeName, p1, p2, label1, label2, c1, c2, fixedExpenses, onSaveFixedExpenses }) {
-  const [focusPeriod, setFocusPeriod] = useState('p2');
-
-  const inc1 = storeIncome(c1, storeName);
-  const inc2 = storeIncome(c2, storeName);
-  const pay1 = storePayroll(p1, storeName);
-  const pay2 = storePayroll(p2, storeName);
+// One store's (or the combined) whole P&L block, for the current period
+// only: the store name up top, the summary card, the itemized statement,
+// and — for a real store — its fixed-expenses edit form. storeName === null
+// renders the combined total.
+function StorePLSection({ storeName, merged, collections, fixedExpenses, onSaveFixedExpenses }) {
+  const inc = storeIncome(collections, storeName);
+  const payroll = storePayroll(merged, storeName);
   const fixed = fixedExpenseTotal(fixedExpenses, storeName);
-  const net1 = inc1.total - pay1 - fixed;
-  const net2 = inc2.total - pay2 - fixed;
-
-  const focus = focusPeriod === 'p1'
-    ? { label: label1, incomeValues: inc1.values, income: inc1.total, payroll: pay1 }
-    : { label: label2, incomeValues: inc2.values, income: inc2.total, payroll: pay2 };
 
   return (
     <section className="pl-store-section">
       <h3 className="pl-store-heading">{storeName || 'All Stores Combined'}</h3>
 
-      <div className="pl-period-compare">
-        <PLPeriodCard label={label1} income={inc1.total} payroll={pay1} fixed={fixed} />
-        <PLPeriodCard
-          label={label2} income={inc2.total} payroll={pay2} fixed={fixed}
-          deltaIncome={inc2.total - inc1.total} deltaNet={net2 - net1}
-        />
-      </div>
+      <PLSummaryCard income={inc.total} payroll={payroll} fixed={fixed} />
 
-      <div className="pl-toolbar">
-        <div className="pl-toolbar-selects">
-          <button className={`tab-btn ${focusPeriod === 'p1' ? 'active' : ''}`} onClick={() => setFocusPeriod('p1')}>{label1}</button>
-          <button className={`tab-btn ${focusPeriod === 'p2' ? 'active' : ''}`} onClick={() => setFocusPeriod('p2')}>{label2}</button>
-        </div>
-      </div>
       <PLStatement
-        periodLabel={focus.label} incomeValues={focus.incomeValues} income={focus.income}
-        payroll={focus.payroll} fixedExpenses={fixedExpenses} storeName={storeName}
+        incomeValues={inc.values} income={inc.total}
+        payroll={payroll} fixedExpenses={fixedExpenses} storeName={storeName}
       />
 
       {storeName != null && (
@@ -815,18 +791,18 @@ function StorePLSection({ storeName, p1, p2, label1, label2, c1, c2, fixedExpens
   );
 }
 
-function PLTab({ p1, p2, label1, label2, c1, c2, fixedExpenses, onSaveFixedExpenses }) {
+function PLTab({ merged, collections, fixedExpenses, onSaveFixedExpenses }) {
   return (
     <div className="tab-content">
       <div className="pl-store-scroll">
         {STORE_ROSTER.stores.map(s => (
           <StorePLSection
-            key={s.name} storeName={s.name} p1={p1} p2={p2} label1={label1} label2={label2} c1={c1} c2={c2}
+            key={s.name} storeName={s.name} merged={merged} collections={collections}
             fixedExpenses={fixedExpenses} onSaveFixedExpenses={onSaveFixedExpenses}
           />
         ))}
         <StorePLSection
-          storeName={null} p1={p1} p2={p2} label1={label1} label2={label2} c1={c1} c2={c2}
+          storeName={null} merged={merged} collections={collections}
           fixedExpenses={fixedExpenses} onSaveFixedExpenses={onSaveFixedExpenses}
         />
       </div>
@@ -1026,8 +1002,7 @@ export default function App() {
         {tab === 'By Store' && <ByStoreTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
         {tab === 'P&L' && (
           <PLTab
-            p1={merged1} p2={merged2} label1={label1} label2={label2}
-            c1={periods.period1?.collections} c2={periods.period2?.collections}
+            merged={merged2} collections={periods.period2?.collections}
             fixedExpenses={fixedExpenses} onSaveFixedExpenses={handleSaveFixedExpenses}
           />
         )}
