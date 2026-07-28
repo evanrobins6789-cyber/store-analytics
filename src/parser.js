@@ -138,7 +138,11 @@ function readWorkbookGrid(file) {
 
 // ─── Hours / Attendance report ──────────────────────────────────────────────
 // Expected shape: a location name, a "From : ... To : ..." line, then a table
-// of Employee Name | Actual Hours, ending in a "Total:" row.
+// of Employee Name | Actual Hours, ending in a "Total:" row. The table has
+// one row per shift worked, not one row per employee — the same name repeats
+// for every day they clocked in during the period, so each employee's rows
+// need to be summed rather than kept as separate entries (the last one
+// would otherwise silently overwrite the rest when periods get merged).
 export async function parseHoursFile(file) {
   const grid = await readWorkbookGrid(file);
 
@@ -161,7 +165,7 @@ export async function parseHoursFile(file) {
 
   const nameCol = 0;
   const hoursCol = hdr.col;
-  const employees = [];
+  const byName = new Map(); // normalized name -> { name, hoursDecimal }
   let totalFromFooter = null;
 
   for (let r = hdr.row + 1; r < grid.length; r++) {
@@ -182,12 +186,17 @@ export async function parseHoursFile(file) {
     const cleanName = cleanEmployeeName(nameText);
     if (isExcludedName(cleanName)) continue;
 
-    employees.push({
-      name: cleanName,
-      hoursDecimal: Math.round(parsed.decimal * 100) / 100,
-      hoursDisplay: `${parsed.hours}h ${String(parsed.minutes).padStart(2, '0')}m`,
-    });
+    const key = normalizeEmployeeName(cleanName);
+    const existing = byName.get(key);
+    if (existing) existing.hoursDecimal += parsed.decimal;
+    else byName.set(key, { name: cleanName, hoursDecimal: parsed.decimal });
   }
+
+  const employees = Array.from(byName.values()).map(e => ({
+    name: e.name,
+    hoursDecimal: Math.round(e.hoursDecimal * 100) / 100,
+    hoursDisplay: decimalToHoursDisplay(e.hoursDecimal),
+  }));
 
   const totalHoursDecimal = totalFromFooter != null
     ? Math.round(totalFromFooter * 100) / 100
