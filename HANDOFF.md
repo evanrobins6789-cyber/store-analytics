@@ -1,8 +1,50 @@
 # Handoff — Waxing The City Analytics ("Employee Performance")
 
-Last updated: 2026-07-27, end of session covering the theme change, the
-P&L tab (built three times, in increasingly different directions), an
-hours-parsing bug fix, and a broken-deploy fix.
+Last updated: 2026-07-28, session covering a diagnosis (not yet fixed) of
+the shared-data-not-syncing bug. Previous session (2026-07-27) covered the
+theme change, the P&L tab (built three times, in increasingly different
+directions), an hours-parsing bug fix, and a broken-deploy fix.
+
+## OPEN ISSUE — Supabase project unreachable, sync broken for everyone but Evan (2026-07-28)
+
+User reported: site shows a red banner "Couldn't reach Supabase (TypeError:
+NetworkError when attempting to fetch resource.) — showing this device's
+local data only" on load, and people other than Evan who open the shared
+link see no data populated.
+
+**Diagnosis** (confirmed, not yet fixed — needs the user's Supabase/Vercel
+dashboard access, which Claude doesn't have):
+- Pulled the live bundle from
+  `https://store-analytics-git-main-evan-s-projects1515.vercel.app/` and
+  extracted the baked-in `REACT_APP_SUPABASE_URL`:
+  `https://ffbcjofwfjwuldpvarbi.supabase.co`.
+- That hostname does not resolve in DNS at all (`nslookup` → "Non-existent
+  domain"), not a timeout/CORS/RLS error. This means the Supabase project
+  behind that ref is gone (deleted, or a stale/wrong ref — not just
+  free-tier-paused, since a paused project still resolves).
+- Evan still sees data because it's cached in his own browser's
+  localStorage (`time_and_till_periods_v1`, see `src/db.js`) from before;
+  other users have no such cache, so they see an empty app.
+- No real Supabase credentials are or were ever committed to this repo
+  (checked full git history of `.env*` — only `.env.example` placeholders
+  exist). Nothing to fix in code; this is purely a Supabase/Vercel config
+  problem.
+
+**Next steps (for the user, in their dashboards)**:
+1. Check supabase.com/dashboard for whether project `ffbcjofwfjwuldpvarbi`
+   still exists. If merely paused, restore it — no other changes needed.
+   If gone, get the URL + anon key of whichever project should be current.
+2. In Vercel (`evan-s-projects1515/store-analytics`) → Settings →
+   Environment Variables, set `REACT_APP_SUPABASE_URL` and
+   `REACT_APP_SUPABASE_ANON_KEY` to the correct project's values (from
+   Supabase dashboard → Settings → API), for whichever environment serves
+   the `-git-main-` URL.
+3. Redeploy — `REACT_APP_*` vars are inlined at build time, so updating
+   them in Vercel alone doesn't affect an already-built deployment.
+
+Was not resolved this session; pick this up first next time before other
+work, since it means shared sync is completely broken for all users right
+now.
 
 ## What this app is
 
