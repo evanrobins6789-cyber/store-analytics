@@ -59,9 +59,6 @@
 }
 .btn-ghost:hover { border-color: var(--brass); color: var(--brass-deep); }
 
-/* ─── Upload center (punch-card slots) ──────────────────────────────── */
-.upload-center { padding: 18px 20px 6px; }
-
 .store-group { margin-bottom: 4px; }
 .store-group-title {
   font-family: 'Fraunces', serif; font-size: 16px; color: var(--ink);
@@ -130,9 +127,11 @@
 .upload-slot:hover { background: #FFF3E6; }
 .upload-slot--steel { border-color: color-mix(in srgb, var(--steel) 45%, var(--line)); }
 .upload-slot--sage  { border-color: color-mix(in srgb, var(--sage) 45%, var(--line)); }
+.upload-slot--brass { border-color: color-mix(in srgb, var(--brass) 45%, var(--line)); }
 .upload-slot--filled { border-style: solid; }
 .upload-slot--filled.upload-slot--steel { background: var(--steel-bg); border-color: var(--steel); }
 .upload-slot--filled.upload-slot--sage  { background: var(--sage-bg); border-color: var(--sage); }
+.upload-slot--filled.upload-slot--brass { background: rgba(242,121,12,0.08); border-color: var(--brass); }
 .upload-slot--filled::before { border-style: solid; }
 
 .upload-slot-icon {
@@ -158,16 +157,6 @@
   display: inline-block; margin-top: 5px; font-size: 11px;
   color: var(--brass-deep); text-decoration: underline;
 }
-
-.btn-collapse { display: block; margin: 14px auto 0; }
-.manage-files-bar {
-  display: block; width: calc(100% - 40px); margin: 10px 20px 0;
-  background: var(--paper-card); border: 1px dashed var(--line);
-  border-radius: 10px; padding: 10px; text-align: center;
-  font-size: 12.5px; color: var(--ink-soft); cursor: pointer;
-  font-family: 'Work Sans', sans-serif;
-}
-.manage-files-bar:hover { border-color: var(--brass); color: var(--brass-deep); }
 
 /* ─── Tabs ───────────────────────────────────────────────────────────── */
 .tab-nav {
@@ -310,9 +299,20 @@
 .unmatched-box li { font-size: 12px; color: var(--ink); margin-bottom: 2px; }
 
 /* ─── P&L tab ────────────────────────────────────────────────────────── */
-.pl-store-section { display: flex; flex-direction: column; gap: 14px; padding-top: 24px; border-top: 1px solid var(--line); }
-.pl-store-section:first-child { padding-top: 0; border-top: none; }
+/* Stores scroll sideways (one "page" per store) instead of stacking down
+   the page — bleeds to the screen edges like the ledger tables do. */
+.pl-store-scroll {
+  display: flex; gap: 16px; overflow-x: auto;
+  margin: 0 -20px; padding: 4px 20px 14px;
+  scroll-snap-type: x proximity;
+}
+.pl-store-section {
+  flex: 0 0 300px; display: flex; flex-direction: column; gap: 14px;
+  scroll-snap-align: start;
+}
+@media (min-width: 640px) { .pl-store-section { flex-basis: 340px; } }
 .pl-store-heading { font-family: 'Fraunces', serif; font-size: 19px; font-weight: 600; color: var(--ink); }
+.pl-period-compare { display: flex; flex-direction: column; gap: 10px; }
 .pl-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .pl-toolbar-selects { display: flex; gap: 8px; flex-wrap: wrap; }
 .pl-statement { display: flex; flex-direction: column; }
@@ -340,8 +340,7 @@
   background: rgba(242,121,12,0.07); margin: 2px -8px 0; padding: 9px 8px; border-radius: 8px;
 }
 .pl-row--total .pl-row-value { color: var(--brass-deep); }
-.pl-fixed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-bottom: 14px; }
-@media (max-width: 480px) { .pl-fixed-grid { grid-template-columns: 1fr; } }
+.pl-fixed-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px 12px; margin-bottom: 14px; }
 .pl-fixed-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-soft); font-family: 'Work Sans', sans-serif; }
 .pl-fixed-field input {
   background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius, 10px);

@@ -5,7 +5,7 @@ import {
   CategoryScale, LinearScale, BarElement, Tooltip, Legend
 } from 'chart.js';
 import { loadPeriods, savePeriod, clearPeriods, isConfigured } from './db';
-import { parseHoursFile, parseSalesFile, normalizeEmployeeName } from './parser';
+import { parseHoursFile, parseSalesFile, parseStoreCollectionFile, normalizeEmployeeName, COLLECTION_CATEGORIES } from './parser';
 import { STORE_ROSTER } from './storeRoster';
 import { getHourlyRate, totalPay } from './hourlyRates';
 import './App.css';
@@ -111,25 +111,36 @@ const FIXED_EXPENSE_FIELDS = [
   { key: 'refunds', label: 'Refunds' },
 ];
 
-// storeName === null means "every store combined" (the company total).
-function storeIncomeAndPayroll(merged, storeName) {
-  if (!merged) return { serviceRevenue: 0, retailSales: 0, payroll: 0 };
-  if (storeName == null) {
-    return {
-      serviceRevenue: merged.totalRevenue || 0,
-      retailSales: merged.totalRetailSales || 0,
-      payroll: merged.totalPayroll || 0,
-    };
-  }
+// Compensation still comes from the Hours + Sales files (hours * rate, plus
+// a 10% commission on retail sales, all with an 8% payroll tax on top —
+// see totalPay in hourlyRates.js). storeName === null means every store
+// combined.
+function storePayroll(merged, storeName) {
+  if (!merged) return 0;
+  if (storeName == null) return merged.totalPayroll || 0;
   const emps = merged.employees.filter(e => STORE_ROSTER.storeByName[normalizeEmployeeName(e.name)] === storeName);
-  const serviceRevenue = emps.reduce((sum, e) => sum + (e.serviceRevenue || 0), 0);
-  const retailSales = emps.reduce((sum, e) => sum + (e.retailSales || 0), 0);
-  const payroll = emps.reduce((sum, e) => {
+  return emps.reduce((sum, e) => {
     const rate = getHourlyRate(e.name);
     const pay = totalPay(e.hoursDecimal, rate, e.retailSales);
     return pay != null ? sum + pay : sum;
   }, 0);
-  return { serviceRevenue, retailSales, payroll };
+}
+
+// Income comes from the store collection summary report (Total Collection),
+// broken into the six categories that sum to it. storeName === null uses
+// the report's own Grand Total row rather than re-summing the three stores
+// (same number either way — verified against a real export — but this is
+// the more authoritative source).
+function storeIncome(collections, storeName) {
+  const entry = storeName == null ? collections?.grandTotal : collections?.stores?.[storeName];
+  const values = {};
+  let total = 0;
+  COLLECTION_CATEGORIES.forEach(c => {
+    const v = entry?.[c.key] || 0;
+    values[c.key] = v;
+    total += v;
+  });
+  return { values, total };
 }
 
 // storeName === null sums that one category across every store (used for
@@ -235,6 +246,7 @@ function UploadSlot({ inputId, title, hint, accent, fileInfo, uploading, onFile 
 function PeriodPanel({ periodKey, periodNum, period, uploadingSlot, onFile, onLabelChange }) {
   const hours = period?.hours;
   const sales = period?.sales;
+  const collections = period?.collections;
   return (
     <div className="period-panel">
       <div className="period-panel-head">
@@ -264,6 +276,15 @@ function PeriodPanel({ periodKey, periodNum, period, uploadingSlot, onFile, onLa
           uploading={uploadingSlot === 'sales'}
           fileInfo={sales ? { fileName: sales.fileName, sub: `${sales.employees.length} employees · ${fmt$(sales.totalServiceRevenue)} total` } : null}
           onFile={file => onFile('sales', file)}
+        />
+        <UploadSlot
+          inputId={`${periodKey}-collections`}
+          title="Store collection summary (for P&L)"
+          hint="Upload the store-level KPI/collection export"
+          accent="brass"
+          uploading={uploadingSlot === 'collections'}
+          fileInfo={collections ? { fileName: collections.fileName, sub: `${Object.keys(collections.stores).length} stores · ${fmt$(collections.grandTotal?.totalCollection)} total collection` } : null}
+          onFile={file => onFile('collections', file)}
         />
       </div>
     </div>
@@ -628,19 +649,20 @@ function ByStoreTab({ p1, p2, label1, label2 }) {
 }
 
 // ─── P&L tab ─────────────────────────────────────────────────────────────────
-// Income and Compensation are computed live from the same Hours + Sales files
-// uploaded above (no separate upload for this tab). Fixed costs (rent,
-// insurance, etc.) don't come from any report — they're entered once per
-// store below and reused for every period until you change them.
-function PLPeriodCard({ label, serviceRevenue, retailSales, payroll, fixed, deltaIncome, deltaNet }) {
-  const income = serviceRevenue + retailSales;
+// Income comes from the store collection summary report's Total Collection
+// (broken into the categories that sum to it). Compensation is computed live
+// from the same Hours + Sales files used elsewhere in the app. Fixed costs
+// (rent, tech fees, bank fees, royalties, etc.) don't come from any report —
+// they're entered once per store below and reused for every period until
+// you change them.
+function PLPeriodCard({ label, income, payroll, fixed, deltaIncome, deltaNet }) {
   const net = income - payroll - fixed;
   const margin = income > 0 ? net / income : null;
   return (
     <div className="summary-card">
       <p className="period-name">{label}</p>
       <div className="summary-row">
-        <span className="summary-label">Income (service + retail)</span>
+        <span className="summary-label">Total Collection</span>
         <span className="summary-value">{fmt$(income)}</span>
         {deltaIncome != null && <Badge curr={income} prev={income - deltaIncome} />}
       </div>
@@ -678,8 +700,7 @@ function StatementRow({ label, value, pctBase, bold }) {
   );
 }
 
-function PLStatement({ periodLabel, serviceRevenue, retailSales, payroll, fixedExpenses, storeName }) {
-  const income = serviceRevenue + retailSales;
+function PLStatement({ periodLabel, incomeValues, income, payroll, fixedExpenses, storeName }) {
   const fixedRows = FIXED_EXPENSE_FIELDS.map(f => ({
     label: f.label,
     value: fixedExpenseCategoryValue(fixedExpenses, storeName, f.key),
@@ -693,10 +714,11 @@ function PLStatement({ periodLabel, serviceRevenue, retailSales, payroll, fixedE
       <p className="chart-title">Full statement — {periodLabel}</p>
       <div className="pl-statement">
         <div className="pl-row pl-row-head"><span className="pl-row-label" /><span className="pl-row-pct">% Income</span><span className="pl-row-value">Amount</span></div>
-        <p className="pl-section-title">Income</p>
-        <StatementRow label="Service revenue" value={serviceRevenue} pctBase={income} />
-        <StatementRow label="Retail sales" value={retailSales} pctBase={income} />
-        <StatementRow label="Total Income" value={income} pctBase={income} bold />
+        <p className="pl-section-title">Income (Total Collection)</p>
+        {COLLECTION_CATEGORIES.map(c => (
+          <StatementRow key={c.key} label={c.label} value={incomeValues[c.key] || 0} pctBase={income} />
+        ))}
+        <StatementRow label="Total Collection" value={income} pctBase={income} bold />
 
         <p className="pl-section-title">Expense</p>
         <StatementRow label="Compensation" value={payroll} pctBase={income} />
@@ -748,28 +770,30 @@ function FixedExpensesForm({ storeName, values, onSave }) {
 // One store's (or the combined) whole P&L block: two-period summary,
 // a period toggle, the itemized statement, and — for a real store — its
 // fixed-expenses edit form. storeName === null renders the combined total.
-function StorePLSection({ storeName, p1, p2, label1, label2, fixedExpenses, onSaveFixedExpenses }) {
+function StorePLSection({ storeName, p1, p2, label1, label2, c1, c2, fixedExpenses, onSaveFixedExpenses }) {
   const [focusPeriod, setFocusPeriod] = useState('p2');
 
-  const m1 = storeIncomeAndPayroll(p1, storeName);
-  const m2 = storeIncomeAndPayroll(p2, storeName);
+  const inc1 = storeIncome(c1, storeName);
+  const inc2 = storeIncome(c2, storeName);
+  const pay1 = storePayroll(p1, storeName);
+  const pay2 = storePayroll(p2, storeName);
   const fixed = fixedExpenseTotal(fixedExpenses, storeName);
-  const income1 = m1.serviceRevenue + m1.retailSales;
-  const income2 = m2.serviceRevenue + m2.retailSales;
-  const net1 = income1 - m1.payroll - fixed;
-  const net2 = income2 - m2.payroll - fixed;
+  const net1 = inc1.total - pay1 - fixed;
+  const net2 = inc2.total - pay2 - fixed;
 
-  const focus = focusPeriod === 'p1' ? { label: label1, ...m1 } : { label: label2, ...m2 };
+  const focus = focusPeriod === 'p1'
+    ? { label: label1, incomeValues: inc1.values, income: inc1.total, payroll: pay1 }
+    : { label: label2, incomeValues: inc2.values, income: inc2.total, payroll: pay2 };
 
   return (
     <section className="pl-store-section">
       <h3 className="pl-store-heading">{storeName || 'All Stores Combined'}</h3>
 
-      <div className="period-compare-grid">
-        <PLPeriodCard label={label1} serviceRevenue={m1.serviceRevenue} retailSales={m1.retailSales} payroll={m1.payroll} fixed={fixed} />
+      <div className="pl-period-compare">
+        <PLPeriodCard label={label1} income={inc1.total} payroll={pay1} fixed={fixed} />
         <PLPeriodCard
-          label={label2} serviceRevenue={m2.serviceRevenue} retailSales={m2.retailSales} payroll={m2.payroll} fixed={fixed}
-          deltaIncome={income2 - income1} deltaNet={net2 - net1}
+          label={label2} income={inc2.total} payroll={pay2} fixed={fixed}
+          deltaIncome={inc2.total - inc1.total} deltaNet={net2 - net1}
         />
       </div>
 
@@ -780,7 +804,7 @@ function StorePLSection({ storeName, p1, p2, label1, label2, fixedExpenses, onSa
         </div>
       </div>
       <PLStatement
-        periodLabel={focus.label} serviceRevenue={focus.serviceRevenue} retailSales={focus.retailSales}
+        periodLabel={focus.label} incomeValues={focus.incomeValues} income={focus.income}
         payroll={focus.payroll} fixedExpenses={fixedExpenses} storeName={storeName}
       />
 
@@ -791,32 +815,35 @@ function StorePLSection({ storeName, p1, p2, label1, label2, fixedExpenses, onSa
   );
 }
 
-function PLTab({ p1, p2, label1, label2, fixedExpenses, onSaveFixedExpenses }) {
+function PLTab({ p1, p2, label1, label2, c1, c2, fixedExpenses, onSaveFixedExpenses }) {
   return (
     <div className="tab-content">
-      {STORE_ROSTER.stores.map(s => (
+      <div className="pl-store-scroll">
+        {STORE_ROSTER.stores.map(s => (
+          <StorePLSection
+            key={s.name} storeName={s.name} p1={p1} p2={p2} label1={label1} label2={label2} c1={c1} c2={c2}
+            fixedExpenses={fixedExpenses} onSaveFixedExpenses={onSaveFixedExpenses}
+          />
+        ))}
         <StorePLSection
-          key={s.name} storeName={s.name} p1={p1} p2={p2} label1={label1} label2={label2}
+          storeName={null} p1={p1} p2={p2} label1={label1} label2={label2} c1={c1} c2={c2}
           fixedExpenses={fixedExpenses} onSaveFixedExpenses={onSaveFixedExpenses}
         />
-      ))}
-      <StorePLSection
-        storeName={null} p1={p1} p2={p2} label1={label1} label2={label2}
-        fixedExpenses={fixedExpenses} onSaveFixedExpenses={onSaveFixedExpenses}
-      />
+      </div>
     </div>
   );
 }
 
 // ─── Setup tab ──────────────────────────────────────────────────────────────
-function SetupTab({ configured }) {
+function SetupTab({ configured, periods, uploadingSlot, onFile, onLabelChange }) {
   const steps = [
     { n: 1, title: 'Export your two hours reports', body: 'From your scheduling/POS system, run the attendance (hours) report for each period you want to compare — e.g. this week and last week.' },
     { n: 2, title: 'Export your two sales reports', body: 'Run the service-sales (KPI) report for the exact same two date ranges. The Service Revenue column is the one this app reads.' },
-    { n: 3, title: 'Upload all four files', body: 'Tap + on each of the four slots above: Hours and Sales for Period 1, then Hours and Sales for Period 2. The date range label fills in automatically from the file.' },
-    { n: 4, title: 'Employees are grouped by store automatically', body: 'The "By Store" tab groups this same comparison by location. The employee → store list is built into the app — no upload needed for it.' },
-    { n: 5, title: 'Read the comparison', body: 'Employee Performance and By Store break down each period by Actual Hours, Service Rev, Retail Sales, Total Sales, Pay + Tax + Retail (hourly pay + 10% retail commission + 8% payroll tax), Production (what they made minus what they cost), two TSTH columns (service-only and total-sales), and Payroll % (pay ÷ total sales). Averages for both TSTH columns and Payroll % show at the bottom of each table. Only employees with both an hours record and a sales record for a period are included.' },
-    { n: 6, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
+    { n: 3, title: 'Export your two store collection summaries', body: 'For the P&L tab, run the store-level KPI/collection export (one row per store, with a Total Collection column) for the same two date ranges.' },
+    { n: 4, title: 'Upload all six files below', body: 'Tap + on each slot: Hours, Sales, and Collection Summary for Period 1, then the same three for Period 2. The date range label fills in automatically from the file.' },
+    { n: 5, title: 'Employees are grouped by store automatically', body: 'The "By Store" tab groups this same comparison by location. The employee → store list is built into the app — no upload needed for it.' },
+    { n: 6, title: 'Read the comparison', body: 'Employee Performance and By Store break down each period by Actual Hours, Service Rev, Retail Sales, Total Sales, Pay + Tax + Retail (hourly pay + 10% retail commission + 8% payroll tax), Production (what they made minus what they cost), two TSTH columns (service-only and total-sales), and Payroll % (pay ÷ total sales). Averages for both TSTH columns and Payroll % show at the bottom of each table. Only employees with both an hours record and a sales record for a period are included.' },
+    { n: 7, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
   ];
   return (
     <div className="tab-content setup-tab">
@@ -825,6 +852,22 @@ function SetupTab({ configured }) {
           ? '✓ Connected to Supabase — your data syncs across devices.'
           : '⚠ Supabase not connected — data is only saved on this device. See below to enable cross-device sync.'}
       </div>
+
+      <div className="upload-center-grid">
+        <PeriodPanel
+          periodKey="period1" periodNum="1" period={periods.period1}
+          uploadingSlot={uploadingSlot.period1}
+          onFile={(kind, file) => onFile('period1', kind, file)}
+          onLabelChange={text => onLabelChange('period1', text)}
+        />
+        <PeriodPanel
+          periodKey="period2" periodNum="2" period={periods.period2}
+          uploadingSlot={uploadingSlot.period2}
+          onFile={(kind, file) => onFile('period2', kind, file)}
+          onLabelChange={text => onLabelChange('period2', text)}
+        />
+      </div>
+
       <div className="setup-section">
         {steps.map(s => (
           <div key={s.n} className="setup-step">
@@ -866,8 +909,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('Overview');
   const [toast, setToast] = useState(null);
-  const [uploadingSlot, setUploadingSlot] = useState({}); // { period1: 'hours'|'sales'|null, ... }
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [uploadingSlot, setUploadingSlot] = useState({}); // { period1: 'hours'|'sales'|'collections'|null, ... }
   const [fixedExpenses, setFixedExpenses] = useState({}); // { [storeName]: { rent, utilities, ... } }
 
   useEffect(() => {
@@ -902,16 +944,21 @@ export default function App() {
   const handleFile = useCallback(async (periodKey, kind, file) => {
     setUploadingSlot(prev => ({ ...prev, [periodKey]: kind }));
     try {
-      const parsed = kind === 'hours' ? await parseHoursFile(file) : await parseSalesFile(file);
+      const parsed = kind === 'hours' ? await parseHoursFile(file)
+        : kind === 'sales' ? await parseSalesFile(file)
+        : await parseStoreCollectionFile(file);
       const cur = periods[periodKey] || emptyPeriod;
       const next = { ...cur, [kind]: parsed };
       if (!cur.label && parsed.dateRangeLabel) next.label = parsed.dateRangeLabel;
       setPeriods(prev => ({ ...prev, [periodKey]: next }));
       const result = await savePeriod(periodKey, next);
+      const desc = kind === 'collections'
+        ? `${Object.keys(parsed.stores).length} stores found`
+        : `${parsed.employees.length} employees found`;
       if (isConfigured() && !result.ok) {
         showToast(`Loaded ${file.name}, but couldn't sync to Supabase (${result.error}) — only visible on this device`, 'error');
       } else {
-        showToast(`Loaded ${file.name} — ${parsed.employees.length} employees found`);
+        showToast(`Loaded ${file.name} — ${desc}`);
       }
     } catch (err) {
       showToast(err.message, 'error');
@@ -930,7 +977,6 @@ export default function App() {
     if (!window.confirm('Clear all uploaded files and start over? This cannot be undone.')) return;
     await clearPeriods();
     setPeriods({ period1: emptyPeriod, period2: emptyPeriod });
-    setPanelOpen(true);
     showToast('All data cleared');
   };
 
@@ -950,7 +996,6 @@ export default function App() {
   const label1 = periods.period1?.label || 'Period 1';
   const label2 = periods.period2?.label || 'Period 2';
   const hasAnyData = !!(periods.period1?.hours || periods.period1?.sales || periods.period2?.hours || periods.period2?.sales);
-  const bothComplete = merged1?.complete && merged2?.complete;
 
   if (loading) return <div className="app-loading"><div className="spinner large" /></div>;
 
@@ -970,34 +1015,6 @@ export default function App() {
         </div>
       </header>
 
-      {(!bothComplete || panelOpen) && (
-        <section className="upload-center">
-          <div className="upload-center-grid">
-            <PeriodPanel
-              periodKey="period1" periodNum="1" period={periods.period1}
-              uploadingSlot={uploadingSlot.period1}
-              onFile={(kind, file) => handleFile('period1', kind, file)}
-              onLabelChange={text => handleLabelChange('period1', text)}
-            />
-            <PeriodPanel
-              periodKey="period2" periodNum="2" period={periods.period2}
-              uploadingSlot={uploadingSlot.period2}
-              onFile={(kind, file) => handleFile('period2', kind, file)}
-              onLabelChange={text => handleLabelChange('period2', text)}
-            />
-          </div>
-          {bothComplete && (
-            <button className="btn-ghost btn-collapse" onClick={() => setPanelOpen(false)}>Hide file panel ↑</button>
-          )}
-        </section>
-      )}
-
-      {bothComplete && !panelOpen && (
-        <button className="manage-files-bar" onClick={() => setPanelOpen(true)}>
-          Manage the 4 uploaded files ↓
-        </button>
-      )}
-
       <nav className="tab-nav">
         {TABS.map(t => (
           <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>{t}</button>
@@ -1010,10 +1027,16 @@ export default function App() {
         {tab === 'P&L' && (
           <PLTab
             p1={merged1} p2={merged2} label1={label1} label2={label2}
+            c1={periods.period1?.collections} c2={periods.period2?.collections}
             fixedExpenses={fixedExpenses} onSaveFixedExpenses={handleSaveFixedExpenses}
           />
         )}
-        {tab === 'Setup' && <SetupTab configured={isConfigured()} />}
+        {tab === 'Setup' && (
+          <SetupTab
+            configured={isConfigured()} periods={periods} uploadingSlot={uploadingSlot}
+            onFile={handleFile} onLabelChange={handleLabelChange}
+          />
+        )}
       </main>
     </div>
   );

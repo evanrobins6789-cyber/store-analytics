@@ -288,6 +288,78 @@ export async function parseSalesFile(file) {
   };
 }
 
+// ─── Store collection summary (for the P&L's Income) ───────────────────────
+// Expected shape: a wide KPI export, one row per store (plus a "Grand Total"
+// row), with columns including "Service Collection", "Product Collection",
+// "Membership Collection", "Package Collection", "Gift Card Collection",
+// "Prepaid Collection" and "Total Collection" — the six category columns
+// sum to the total (verified against a real export: e.g. Concord's Service
+// + Product + Membership + Package + Gift Card + Prepaid Collection ==
+// its Total Collection, to the cent).
+const COLLECTION_CATEGORIES = [
+  { key: 'serviceCollection', header: 'Service Collection', label: 'Service' },
+  { key: 'productCollection', header: 'Product Collection', label: 'Product / Retail' },
+  { key: 'membershipCollection', header: 'Membership Collection', label: 'Membership' },
+  { key: 'packageCollection', header: 'Package Collection', label: 'Package' },
+  { key: 'giftCardCollection', header: 'Gift Card Collection', label: 'Gift Card' },
+  { key: 'prepaidCollection', header: 'Prepaid Collection', label: 'Prepaid' },
+];
+
+export { COLLECTION_CATEGORIES };
+
+function matchCollectionStoreName(label) {
+  const l = label.toLowerCase();
+  if (l.includes('concord')) return 'CONCORD';
+  if (l.includes('pike creek')) return 'PIKE CREEK';
+  if (l.includes('media')) return 'MEDIA';
+  return null;
+}
+
+export async function parseStoreCollectionFile(file) {
+  const grid = await readWorkbookGrid(file);
+
+  const findCol = header => {
+    const hdr = findHeaderCol(grid, [t => t === header.toLowerCase()]);
+    if (!hdr) throw new Error(`Could not find a "${header}" column in this file. Make sure it is a store KPI / collection summary export.`);
+    return hdr;
+  };
+
+  const categoryCols = COLLECTION_CATEGORIES.map(c => ({ ...c, col: findCol(c.header) }));
+  const totalCol = findCol('Total Collection');
+  const headerRow = totalCol.row;
+  const nameCol = 0;
+
+  const numAt = (row, hdr) => {
+    const raw = row[hdr.col]?.v;
+    return typeof raw === 'number' ? raw : (parseFloat(String(raw).replace(/[$,]/g, '')) || 0);
+  };
+
+  const readEntry = row => {
+    const entry = { totalCollection: numAt(row, totalCol) };
+    categoryCols.forEach(c => { entry[c.key] = numAt(row, c.col); });
+    return entry;
+  };
+
+  const stores = {};
+  let grandTotal = null;
+
+  for (let r = headerRow + 1; r < grid.length; r++) {
+    const row = grid[r];
+    if (!rowHasData(row)) continue;
+    const label = cellText(row[nameCol]);
+    if (!label) continue;
+
+    if (/^grand\s*total$/i.test(label)) { grandTotal = readEntry(row); continue; }
+
+    const storeName = matchCollectionStoreName(label);
+    if (storeName) stores[storeName] = readEntry(row);
+  }
+
+  if (!Object.keys(stores).length) throw new Error('Could not match any store names (Concord, Media, Pike Creek) in this file.');
+
+  return { fileName: file.name, stores, grandTotal };
+}
+
 // ─── Store roster ───────────────────────────────────────────────────────────
 // A single-column list like:
 //   STORE NAME: PIKE CREEK
