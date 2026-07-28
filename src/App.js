@@ -132,13 +132,40 @@ function storeIncomeAndPayroll(merged, storeName) {
   return { serviceRevenue, retailSales, payroll };
 }
 
-function fixedExpenseTotal(fixedExpenses, storeName) {
+// storeName === null sums that one category across every store (used for
+// the combined statement); otherwise it's just that store's saved value.
+function fixedExpenseCategoryValue(fixedExpenses, storeName, key) {
   if (storeName == null) {
-    return STORE_ROSTER.stores.reduce((sum, s) => sum + fixedExpenseTotal(fixedExpenses, s.name), 0);
+    return STORE_ROSTER.stores.reduce((sum, s) => sum + fixedExpenseCategoryValue(fixedExpenses, s.name, key), 0);
   }
-  const vals = fixedExpenses?.[storeName] || {};
-  return FIXED_EXPENSE_FIELDS.reduce((sum, f) => sum + (Number(vals[f.key]) || 0), 0);
+  return Number(fixedExpenses?.[storeName]?.[key]) || 0;
 }
+
+function fixedExpenseTotal(fixedExpenses, storeName) {
+  return FIXED_EXPENSE_FIELDS.reduce((sum, f) => sum + fixedExpenseCategoryValue(fixedExpenses, storeName, f.key), 0);
+}
+
+// Seeded from the real per-store numbers in the March 2026 Contribution
+// Report (Rent = Occupancy Cost Rent, Information Systems = tech fees).
+// Used only to fill in a store the first time it has no saved values —
+// once saved (even unchanged), the user's own numbers take over.
+const DEFAULT_FIXED_EXPENSES = {
+  CONCORD: {
+    rent: 5336.66, utilities: 847.4, insurance: 309.89, licenses: 0, alarmMonitoring: 0,
+    accounting: 0, bankFees: 156.36, infoSystems: 799, royalties: 500.39, supplies: 210.4,
+    advertising: 2606.61, maintenance: 0, paidouts: 28.24, refunds: 0,
+  },
+  MEDIA: {
+    rent: 6038.33, utilities: 848, insurance: 309.89, licenses: 0, alarmMonitoring: 0,
+    accounting: 0, bankFees: 373.93, infoSystems: 846.94, royalties: 1152.47, supplies: 1324.82,
+    advertising: 3062.82, maintenance: 55, paidouts: 90, refunds: 0,
+  },
+  'PIKE CREEK': {
+    rent: 5895.71, utilities: 1079.45, insurance: 309.89, licenses: 0, alarmMonitoring: 0,
+    accounting: 0, bankFees: 496.04, infoSystems: 799, royalties: 1421.22, supplies: 1470.49,
+    advertising: 3056.87, maintenance: 55, paidouts: 154.84, refunds: 0,
+  },
+};
 
 // ─── Signature element: a balance scale that tips toward the more ──────────
 // ─── productive period (higher revenue per labor hour) ─────────────────────
@@ -638,33 +665,46 @@ function PLPeriodCard({ label, serviceRevenue, retailSales, payroll, fixed, delt
   );
 }
 
+// A single line of the statement: label, its % of that period's income, and
+// the dollar value.
+function StatementRow({ label, value, pctBase, bold }) {
+  const pct = pctBase > 0 ? (value / pctBase) * 100 : null;
+  return (
+    <div className={`pl-row ${bold ? 'pl-row--total' : ''}`}>
+      <span className="pl-row-label">{label}</span>
+      <span className="pl-row-pct">{pct != null ? `${pct.toFixed(1)}%` : '—'}</span>
+      <span className="pl-row-value">{fmt$(value)}</span>
+    </div>
+  );
+}
+
 function PLStatement({ periodLabel, serviceRevenue, retailSales, payroll, fixedExpenses, storeName }) {
   const income = serviceRevenue + retailSales;
-  const totalExpense = payroll + fixedExpenseTotal(fixedExpenses, storeName);
+  const fixedRows = FIXED_EXPENSE_FIELDS.map(f => ({
+    label: f.label,
+    value: fixedExpenseCategoryValue(fixedExpenses, storeName, f.key),
+  }));
+  const fixedTotal = fixedRows.reduce((sum, r) => sum + r.value, 0);
+  const totalExpense = payroll + fixedTotal;
   const netIncome = income - totalExpense;
-  const vals = storeName == null ? null : (fixedExpenses?.[storeName] || {});
-  const fixedRows = storeName == null
-    ? STORE_ROSTER.stores.map(s => ({ label: s.name, value: fixedExpenseTotal(fixedExpenses, s.name) }))
-    : FIXED_EXPENSE_FIELDS.map(f => ({ label: f.label, value: Number(vals[f.key]) || 0 }));
 
   return (
     <div className="chart-card">
       <p className="chart-title">Full statement — {periodLabel}</p>
       <div className="pl-statement">
+        <div className="pl-row pl-row-head"><span className="pl-row-label" /><span className="pl-row-pct">% Income</span><span className="pl-row-value">Amount</span></div>
         <p className="pl-section-title">Income</p>
-        <div className="pl-row"><span className="pl-row-label">Service revenue</span><span className="pl-row-value">{fmt$(serviceRevenue)}</span></div>
-        <div className="pl-row"><span className="pl-row-label">Retail sales</span><span className="pl-row-value">{fmt$(retailSales)}</span></div>
-        <div className="pl-row pl-row--total"><span className="pl-row-label">Total Income</span><span className="pl-row-value">{fmt$(income)}</span></div>
+        <StatementRow label="Service revenue" value={serviceRevenue} pctBase={income} />
+        <StatementRow label="Retail sales" value={retailSales} pctBase={income} />
+        <StatementRow label="Total Income" value={income} pctBase={income} bold />
 
         <p className="pl-section-title">Expense</p>
-        <div className="pl-row"><span className="pl-row-label">Compensation</span><span className="pl-row-value">{fmt$(payroll)}</span></div>
-        <p className="pl-section-title">{storeName == null ? 'Fixed expenses by store' : 'Fixed expenses'}</p>
-        {fixedRows.map(r => (
-          <div className="pl-row" key={r.label}><span className="pl-row-label">{r.label}</span><span className="pl-row-value">{fmt$(r.value)}</span></div>
-        ))}
-        <div className="pl-row pl-row--total"><span className="pl-row-label">Total Expense</span><span className="pl-row-value">{fmt$(totalExpense)}</span></div>
+        <StatementRow label="Compensation" value={payroll} pctBase={income} />
+        <p className="pl-section-title">Fixed expenses</p>
+        {fixedRows.map(r => <StatementRow key={r.label} label={r.label} value={r.value} pctBase={income} />)}
+        <StatementRow label="Total Expense" value={totalExpense} pctBase={income} bold />
 
-        <div className="pl-row pl-row--total"><span className="pl-row-label">Net Income</span><span className="pl-row-value">{fmt$(netIncome)}</span></div>
+        <StatementRow label="Net Income" value={netIncome} pctBase={income} bold />
       </div>
     </div>
   );
@@ -705,14 +745,15 @@ function FixedExpensesForm({ storeName, values, onSave }) {
   );
 }
 
-function PLTab({ p1, p2, label1, label2, fixedExpenses, onSaveFixedExpenses }) {
-  const [storeSel, setStoreSel] = useState(''); // '' = All Stores
+// One store's (or the combined) whole P&L block: two-period summary,
+// a period toggle, the itemized statement, and — for a real store — its
+// fixed-expenses edit form. storeName === null renders the combined total.
+function StorePLSection({ storeName, p1, p2, label1, label2, fixedExpenses, onSaveFixedExpenses }) {
   const [focusPeriod, setFocusPeriod] = useState('p2');
-  const selectedStore = storeSel === '' ? null : storeSel;
 
-  const m1 = storeIncomeAndPayroll(p1, selectedStore);
-  const m2 = storeIncomeAndPayroll(p2, selectedStore);
-  const fixed = fixedExpenseTotal(fixedExpenses, selectedStore);
+  const m1 = storeIncomeAndPayroll(p1, storeName);
+  const m2 = storeIncomeAndPayroll(p2, storeName);
+  const fixed = fixedExpenseTotal(fixedExpenses, storeName);
   const income1 = m1.serviceRevenue + m1.retailSales;
   const income2 = m2.serviceRevenue + m2.retailSales;
   const net1 = income1 - m1.payroll - fixed;
@@ -721,13 +762,8 @@ function PLTab({ p1, p2, label1, label2, fixedExpenses, onSaveFixedExpenses }) {
   const focus = focusPeriod === 'p1' ? { label: label1, ...m1 } : { label: label2, ...m2 };
 
   return (
-    <div className="tab-content">
-      <div className="pl-toolbar">
-        <select className="sort-select" value={storeSel} onChange={e => setStoreSel(e.target.value)}>
-          <option value="">All Stores</option>
-          {STORE_ROSTER.stores.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
-        </select>
-      </div>
+    <section className="pl-store-section">
+      <h3 className="pl-store-heading">{storeName || 'All Stores Combined'}</h3>
 
       <div className="period-compare-grid">
         <PLPeriodCard label={label1} serviceRevenue={m1.serviceRevenue} retailSales={m1.retailSales} payroll={m1.payroll} fixed={fixed} />
@@ -745,12 +781,29 @@ function PLTab({ p1, p2, label1, label2, fixedExpenses, onSaveFixedExpenses }) {
       </div>
       <PLStatement
         periodLabel={focus.label} serviceRevenue={focus.serviceRevenue} retailSales={focus.retailSales}
-        payroll={focus.payroll} fixedExpenses={fixedExpenses} storeName={selectedStore}
+        payroll={focus.payroll} fixedExpenses={fixedExpenses} storeName={storeName}
       />
 
-      {selectedStore != null && (
-        <FixedExpensesForm storeName={selectedStore} values={fixedExpenses?.[selectedStore] || {}} onSave={onSaveFixedExpenses} />
+      {storeName != null && (
+        <FixedExpensesForm storeName={storeName} values={fixedExpenses?.[storeName] || {}} onSave={onSaveFixedExpenses} />
       )}
+    </section>
+  );
+}
+
+function PLTab({ p1, p2, label1, label2, fixedExpenses, onSaveFixedExpenses }) {
+  return (
+    <div className="tab-content">
+      {STORE_ROSTER.stores.map(s => (
+        <StorePLSection
+          key={s.name} storeName={s.name} p1={p1} p2={p2} label1={label1} label2={label2}
+          fixedExpenses={fixedExpenses} onSaveFixedExpenses={onSaveFixedExpenses}
+        />
+      ))}
+      <StorePLSection
+        storeName={null} p1={p1} p2={p2} label1={label1} label2={label2}
+        fixedExpenses={fixedExpenses} onSaveFixedExpenses={onSaveFixedExpenses}
+      />
     </div>
   );
 }
@@ -823,7 +876,17 @@ export default function App() {
         period1: { ...emptyPeriod, ...(saved.period1 || {}) },
         period2: { ...emptyPeriod, ...(saved.period2 || {}) },
       });
-      setFixedExpenses(saved.fixed_expenses || {});
+      // Seed any store that has no saved fixed expenses yet with the real
+      // numbers from the March 2026 Contribution Report — once a store is
+      // saved (even unchanged), its own values take over from here on.
+      const savedFixed = saved.fixed_expenses || {};
+      const withDefaults = { ...savedFixed };
+      let seeded = false;
+      Object.keys(DEFAULT_FIXED_EXPENSES).forEach(store => {
+        if (!withDefaults[store]) { withDefaults[store] = DEFAULT_FIXED_EXPENSES[store]; seeded = true; }
+      });
+      setFixedExpenses(withDefaults);
+      if (seeded) savePeriod('fixed_expenses', withDefaults);
       setLoading(false);
       if (isConfigured() && source === 'local') {
         showToast(`Couldn't reach Supabase (${error || 'unknown error'}) — showing this device's local data only`, 'error');
