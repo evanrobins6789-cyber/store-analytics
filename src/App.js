@@ -180,29 +180,11 @@ const DEFAULT_FIXED_EXPENSES = {
   },
 };
 
-// ─── Signature element: a balance scale that tips toward the more ──────────
-// ─── productive period (higher revenue per labor hour) ─────────────────────
+// ─── Overview headline: side-by-side comparison of the more productive ─────
+// ─── period (higher revenue per labor hour) ─────────────────────────────────
 function BalanceScale({ leftLabel, rightLabel, leftValue, rightValue }) {
-  const lv = leftValue || 0;
-  const rv = rightValue || 0;
-  const maxV = Math.max(Math.abs(lv), Math.abs(rv), 1);
-  const angle = Math.max(-9, Math.min(9, ((rv - lv) / maxV) * 9));
-
   return (
     <div className="balance">
-      <svg viewBox="0 0 320 150" className="balance-svg" aria-hidden="true">
-        <polygon points="150,142 170,142 160,116" className="balance-base" />
-        <rect x="146" y="140" width="28" height="6" rx="2" className="balance-foot" />
-        <line x1="160" y1="18" x2="160" y2="118" className="balance-post" />
-        <g style={{ transform: `rotate(${angle}deg)`, transformOrigin: '160px 32px' }} className="balance-beam-group">
-          <line x1="30" y1="32" x2="290" y2="32" className="balance-beam" />
-          <circle cx="160" cy="32" r="6" className="balance-hinge" />
-          <line x1="30" y1="32" x2="30" y2="62" className="balance-chain" />
-          <line x1="290" y1="32" x2="290" y2="62" className="balance-chain" />
-          <ellipse cx="30" cy="68" rx="27" ry="9" className="balance-pan" />
-          <ellipse cx="290" cy="68" rx="27" ry="9" className="balance-pan" />
-        </g>
-      </svg>
       <div className="balance-labels">
         <div className="balance-side">
           <span className="balance-side-label">{leftLabel}</span>
