@@ -1,16 +1,48 @@
 # Handoff — Waxing The City Analytics ("Employee Performance")
 
-Last updated: 2026-08-08 (third session that day) — replaced the whole
-Period 1/2 upload model with date-driven report periods and a free-form
-comparison picker (see below; this supersedes the "automatic period
-history" work from earlier the same day — same underlying idea, but the
-user asked to drop Period 1/2 slots entirely). Earlier that day: added
-automatic period history, then before that added the new "Weekly Report"
-tab plus a visual pass (removed the balance-scale icon, bigger data
-fonts). Session before (2026-07-28) diagnosed — but did not fix — the
+Last updated: 2026-08-08 (fourth touch that day) — fixed a real bug in the
+report-periods rework from earlier the same session: the user tried
+uploading right after the change shipped and reported "the main page
+isn't populating." Root cause and fix are in "Report periods didn't show
+up anywhere" below, right under the feature that introduced it. Same day,
+earlier: replaced the whole Period 1/2 upload model with date-driven
+report periods and a free-form comparison picker (supersedes "automatic
+period history" from earlier still — user asked to drop Period 1/2 slots
+entirely once that landed). Before that: added the new "Weekly Report" tab
+plus a visual pass (removed the balance-scale icon, bigger data fonts).
+Session before (2026-07-28) diagnosed — but did not fix — the
 shared-data-not-syncing bug documented in the still-open issue directly
 below; still live. Session before that (2026-07-27) covered the theme
 change, the P&L tab, an hours-parsing bug fix, and a broken-deploy fix.
+
+## FIX — report periods didn't show up anywhere after upload (2026-08-08, fourth touch)
+
+Immediately after the Period 1/2 → report-periods change below shipped,
+the user uploaded a real report and the main page (Overview) stayed
+empty — same for Employee Performance, By Store, and P&L. This was a real
+bug, not just an unverified-in-browser gap: the new CompareBar's two
+date-range pickers start blank (`{from:'', to:''}`), and nothing in
+`handleFile` ever filled them in after a successful upload — so a fresh
+account (or anyone who'd just hit "Delete all data") could upload
+correctly, see it land in History, and still see "no data" everywhere
+else because the picker wasn't pointed at any real date range yet.
+
+**Fix**, in `App.js`'s `handleFile`: after adding/updating a period,
+`setCompareRange` now backfills via `computeDefaultRange(next)` whenever
+*both* sides of the picker are still untouched (both from/to blank) —
+i.e. only on that first-ever-population case; once the user (or this
+backfill) has set a real range, later uploads don't yank it out from
+under them. Also fixed the empty-state copy in Overview/Employee
+Performance/By Store, which still said "no files uploaded yet" — that's
+no longer the likely cause now that periods are matched by date range, so
+the message now points at the picker/Setup tab instead.
+
+Verified via `CI=true npm run build` only — still no browser automation
+on this machine. This class of bug (something that only breaks in a real
+render, not in build/lint) is exactly why every prior "needs a real
+browser click-through" caveat in this file has been earning its keep —
+worth actually doing that click-through soon instead of deferring it
+again.
 
 ## NEW THIS SESSION — Period 1/2 replaced by date-driven report periods (2026-08-08, third session)
 
