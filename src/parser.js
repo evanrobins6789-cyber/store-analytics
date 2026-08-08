@@ -34,6 +34,21 @@ function rowHasData(row) {
   return row.some(c => cellText(c) !== '');
 }
 
+// Parse a loose date string ("07/01/2026", "7/1/2026 12:00 AM", ...) into an
+// ISO YYYY-MM-DD string built from local calendar fields, or null if it
+// doesn't parse. Deliberately not d.toISOString() — that round-trips through
+// UTC and can shift the date by a day right around midnight.
+export function parseLooseDate(text) {
+  if (!text) return null;
+  const cleaned = String(text).replace(/\s+\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM)?\s*$/i, '').trim();
+  const d = new Date(cleaned);
+  if (isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 // Find the first "From : ... To : ..." style date range anywhere near the top
 function findDateRange(grid) {
   const re = /from\s*:?\s*(.+?)\s+to\s*:?\s*(.+?)(?:\s{2,}|\s+by\s*:|\s+report\b|$)/i;
@@ -44,7 +59,7 @@ function findDateRange(grid) {
       if (m) {
         const from = m[1].trim();
         const to = m[2].trim();
-        return { from, to, label: `${from} – ${to}` };
+        return { from, to, label: `${from} – ${to}`, fromDate: parseLooseDate(from), toDate: parseLooseDate(to) };
       }
     }
   }
@@ -205,6 +220,8 @@ export async function parseHoursFile(file) {
   return {
     location,
     dateRangeLabel: dateRange ? dateRange.label : null,
+    fromDate: dateRange?.fromDate || null,
+    toDate: dateRange?.toDate || null,
     totalHoursDecimal,
     totalHoursDisplay: decimalToHoursDisplay(totalHoursDecimal),
     employees,
@@ -279,6 +296,8 @@ export async function parseSalesFile(file) {
 
   return {
     dateRangeLabel: dateRange ? dateRange.label : null,
+    fromDate: dateRange?.fromDate || null,
+    toDate: dateRange?.toDate || null,
     totalServiceRevenue,
     totalRetailSales,
     otherRevenue: Math.round(otherRevenue * 100) / 100,

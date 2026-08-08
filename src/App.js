@@ -5,7 +5,7 @@ import {
   CategoryScale, LinearScale, BarElement, Tooltip, Legend
 } from 'chart.js';
 import { loadPeriods, savePeriod, isConfigured } from './db';
-import { parseHoursFile, parseSalesFile, parseStoreCollectionFile, normalizeEmployeeName, COLLECTION_CATEGORIES } from './parser';
+import { parseHoursFile, parseSalesFile, parseStoreCollectionFile, normalizeEmployeeName, decimalToHoursDisplay, parseLooseDate, COLLECTION_CATEGORIES } from './parser';
 import { STORE_ROSTER } from './storeRoster';
 import { getHourlyRate, totalPay } from './hourlyRates';
 import WeeklyReportTab from './weeklyReport/WeeklyReportTab';
@@ -29,17 +29,152 @@ function Badge({ curr, prev }) {
   return <span className={`badge ${up ? 'badge-up' : 'badge-dn'}`}>{up ? '+' : ''}{pct}%</span>;
 }
 
-// ─── History: snapshot a period slot before it's overwritten, so re-using ──
-// ─── Period 1/2 for a new date range never destroys the old one ────────────
-function makeHistoryEntry(snapshot) {
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    archivedAt: new Date().toISOString(),
-    label: snapshot?.label || '',
-    hours: snapshot?.hours || null,
-    sales: snapshot?.sales || null,
-    collections: snapshot?.collections || null,
+// ─── Report periods: every upload files itself into a period by its own ────
+// ─── date range — no manual "Period 1 / Period 2" slots to manage ──────────
+function newPeriodId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function fmtDateShort(iso) {
+  if (!iso) return '';
+  return new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function rangeLabel(range) {
+  if (!range?.from || !range?.to) return 'No range selected';
+  return `${fmtDateShort(range.from)} – ${fmtDateShort(range.to)}`;
+}
+
+function periodDisplayLabel(entry) {
+  if (entry.label) return entry.label;
+  if (entry.fromDate && entry.toDate) return `${fmtDateShort(entry.fromDate)} – ${fmtDateShort(entry.toDate)}`;
+  return 'Untitled period';
+}
+
+// One-time migration for accounts that still have data under the old
+// period1/period2 (+ period_history) keys from before periods were keyed by
+// date range — folds them into the new unified list so nothing uploaded
+// before this change goes missing.
+function migrateLegacyToReportPeriods(saved) {
+  const list = [];
+  const addSnapshot = snap => {
+    if (!snap || (!snap.hours && !snap.sales && !snap.collections)) return;
+    const label = snap.label || snap.hours?.dateRangeLabel || snap.sales?.dateRangeLabel || '';
+    const [fromText, toText] = label.split(' – ');
+    list.push({
+      id: newPeriodId(),
+      label,
+      fromDate: snap.hours?.fromDate || snap.sales?.fromDate || parseLooseDate(fromText) || null,
+      toDate: snap.hours?.toDate || snap.sales?.toDate || parseLooseDate(toText) || null,
+      hours: snap.hours || null,
+      sales: snap.sales || null,
+      collections: snap.collections || null,
+      updatedAt: new Date().toISOString(),
+    });
   };
+  addSnapshot(saved.period1);
+  addSnapshot(saved.period2);
+  (saved.period_history || []).forEach(addSnapshot);
+  return list;
+}
+
+// Every report period whose date range overlaps [from, to] — ISO YYYY-MM-DD
+// strings compare correctly with plain string comparison.
+function periodsOverlappingRange(reportPeriods, range) {
+  if (!range?.from || !range?.to) return [];
+  return reportPeriods.filter(p => p.fromDate && p.toDate && p.fromDate <= range.to && p.toDate >= range.from);
+}
+
+// Sum multiple periods' hours/sales/collections into one combined dataset —
+// lets a picked date range span more than one uploaded report (e.g. a full
+// month made of two semi-monthly pay periods) while reusing mergePeriod and
+// every downstream display component unchanged.
+function combineHours(periods) {
+  const list = periods.map(p => p.hours).filter(Boolean);
+  if (!list.length) return null;
+  const byName = new Map();
+  list.forEach(h => (h.employees || []).forEach(e => {
+    const key = normalizeEmployeeName(e.name);
+    const cur = byName.get(key) || { name: e.name, hoursDecimal: 0 };
+    cur.hoursDecimal += e.hoursDecimal || 0;
+    byName.set(key, cur);
+  }));
+  const employees = Array.from(byName.values()).map(e => ({
+    name: e.name,
+    hoursDecimal: Math.round(e.hoursDecimal * 100) / 100,
+    hoursDisplay: decimalToHoursDisplay(e.hoursDecimal),
+  }));
+  const totalHoursDecimal = Math.round(list.reduce((s, h) => s + (h.totalHoursDecimal || 0), 0) * 100) / 100;
+  return {
+    location: [...new Set(list.map(h => h.location).filter(Boolean))].join(', ') || null,
+    totalHoursDecimal,
+    totalHoursDisplay: decimalToHoursDisplay(totalHoursDecimal),
+    employees,
+  };
+}
+
+function combineSales(periods) {
+  const list = periods.map(p => p.sales).filter(Boolean);
+  if (!list.length) return null;
+  const byName = new Map();
+  let otherRevenue = 0, otherRetailSales = 0;
+  list.forEach(s => {
+    otherRevenue += s.otherRevenue || 0;
+    otherRetailSales += s.otherRetailSales || 0;
+    (s.employees || []).forEach(e => {
+      const key = normalizeEmployeeName(e.name);
+      const cur = byName.get(key) || { name: e.name, serviceRevenue: 0, retailSales: 0 };
+      cur.serviceRevenue += e.serviceRevenue || 0;
+      cur.retailSales += e.retailSales || 0;
+      byName.set(key, cur);
+    });
+  });
+  const employees = Array.from(byName.values()).map(e => ({
+    name: e.name,
+    serviceRevenue: Math.round(e.serviceRevenue * 100) / 100,
+    retailSales: Math.round(e.retailSales * 100) / 100,
+  }));
+  return {
+    totalServiceRevenue: Math.round(list.reduce((s, x) => s + (x.totalServiceRevenue || 0), 0) * 100) / 100,
+    totalRetailSales: Math.round(list.reduce((s, x) => s + (x.totalRetailSales || 0), 0) * 100) / 100,
+    otherRevenue: Math.round(otherRevenue * 100) / 100,
+    otherRetailSales: Math.round(otherRetailSales * 100) / 100,
+    employees,
+  };
+}
+
+function combineCollections(periods) {
+  const list = periods.map(p => p.collections).filter(Boolean);
+  if (!list.length) return null;
+  const emptyCategoryTotals = () => Object.fromEntries(COLLECTION_CATEGORIES.map(c => [c.key, 0]));
+  const stores = {};
+  const grandTotal = { totalCollection: 0, ...emptyCategoryTotals() };
+  list.forEach(c => {
+    Object.entries(c.stores || {}).forEach(([storeName, entry]) => {
+      const cur = stores[storeName] || { totalCollection: 0, ...emptyCategoryTotals() };
+      cur.totalCollection += entry.totalCollection || 0;
+      COLLECTION_CATEGORIES.forEach(cc => { cur[cc.key] += entry[cc.key] || 0; });
+      stores[storeName] = cur;
+    });
+    grandTotal.totalCollection += c.grandTotal?.totalCollection || 0;
+    COLLECTION_CATEGORIES.forEach(cc => { grandTotal[cc.key] += c.grandTotal?.[cc.key] || 0; });
+  });
+  return { stores, grandTotal };
+}
+
+// Default comparison: the two most recent distinct periods, so the app
+// isn't blank on first load.
+function computeDefaultRange(reportPeriods) {
+  const dated = reportPeriods.filter(p => p.fromDate && p.toDate).sort((a, b) => b.fromDate.localeCompare(a.fromDate));
+  const toRange = p => (p ? { from: p.fromDate, to: p.toDate } : { from: '', to: '' });
+  return { a: toRange(dated[1]), b: toRange(dated[0]) };
+}
+
+function toISODate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 // ─── Merge one period's hours + sales into a single comparable dataset ─────
@@ -240,50 +375,75 @@ function UploadSlot({ inputId, title, hint, accent, fileInfo, uploading, onFile 
   );
 }
 
-function PeriodPanel({ periodKey, periodNum, period, uploadingSlot, onFile, onLabelChange }) {
-  const hours = period?.hours;
-  const sales = period?.sales;
-  const collections = period?.collections;
+// The most recently updated period that has a file of this kind — used only
+// to show "here's what's currently loaded" feedback in the upload box.
+function mostRecentOfKind(reportPeriods, kind) {
+  const withKind = reportPeriods.filter(p => p[kind]);
+  if (!withKind.length) return null;
+  return withKind.reduce((latest, p) => ((p.updatedAt || '') > (latest.updatedAt || '') ? p : latest))[kind];
+}
+
+function UploadPanel({ reportPeriods, uploadingKind, onFile }) {
+  const hours = mostRecentOfKind(reportPeriods, 'hours');
+  const sales = mostRecentOfKind(reportPeriods, 'sales');
+  const collections = mostRecentOfKind(reportPeriods, 'collections');
   return (
     <div className="period-panel">
       <div className="period-panel-head">
-        <span className="period-eyebrow">Period {periodNum}</span>
-        <input
-          className="period-label-input"
-          placeholder="Date range (fills in automatically)"
-          value={period?.label || ''}
-          onChange={e => onLabelChange(e.target.value)}
-        />
+        <span className="period-eyebrow">Upload a report</span>
+        <p className="upload-panel-hint">Each file's own date range files it into the right period automatically — upload as many as you want, over time, without losing anything.</p>
       </div>
       <div className="period-slots">
         <UploadSlot
-          inputId={`${periodKey}-hours`}
+          inputId="upload-hours"
           title="Hours worked"
           hint="Upload the attendance / hours export"
           accent="steel"
-          uploading={uploadingSlot === 'hours'}
+          uploading={uploadingKind === 'hours'}
           fileInfo={hours ? { fileName: hours.fileName, sub: `${hours.employees.length} employees · ${hours.totalHoursDisplay} total` } : null}
           onFile={file => onFile('hours', file)}
         />
         <UploadSlot
-          inputId={`${periodKey}-sales`}
+          inputId="upload-sales"
           title="Service sales"
           hint="Upload the sales / KPI export"
           accent="sage"
-          uploading={uploadingSlot === 'sales'}
+          uploading={uploadingKind === 'sales'}
           fileInfo={sales ? { fileName: sales.fileName, sub: `${sales.employees.length} employees · ${fmt$(sales.totalServiceRevenue)} total` } : null}
           onFile={file => onFile('sales', file)}
         />
         <UploadSlot
-          inputId={`${periodKey}-collections`}
+          inputId="upload-collections"
           title="Store collection summary (for P&L)"
           hint="Upload the store-level KPI/collection export"
           accent="brass"
-          uploading={uploadingSlot === 'collections'}
+          uploading={uploadingKind === 'collections'}
           fileInfo={collections ? { fileName: collections.fileName, sub: `${Object.keys(collections.stores).length} stores · ${fmt$(collections.grandTotal?.totalCollection)} total collection` } : null}
           onFile={file => onFile('collections', file)}
         />
       </div>
+    </div>
+  );
+}
+
+// ─── Compare bar: pick the two date ranges every comparison tab uses ───────
+function CompareBar({ rangeA, rangeB, onRangeChange, onMonthToDate }) {
+  return (
+    <div className="compare-bar">
+      <div className="compare-range">
+        <span className="compare-range-tag compare-range-tag--a">A</span>
+        <input type="date" value={rangeA.from} onChange={e => onRangeChange('a', 'from', e.target.value)} />
+        <span className="compare-range-sep">–</span>
+        <input type="date" value={rangeA.to} onChange={e => onRangeChange('a', 'to', e.target.value)} />
+      </div>
+      <span className="compare-vs">vs</span>
+      <div className="compare-range">
+        <span className="compare-range-tag compare-range-tag--b">B</span>
+        <input type="date" value={rangeB.from} onChange={e => onRangeChange('b', 'from', e.target.value)} />
+        <span className="compare-range-sep">–</span>
+        <input type="date" value={rangeB.to} onChange={e => onRangeChange('b', 'to', e.target.value)} />
+      </div>
+      <button className="btn-ghost btn-sm compare-mtd-btn" onClick={onMonthToDate}>This month vs last month</button>
     </div>
   );
 }
@@ -808,16 +968,17 @@ function PLTab({ merged, collections, fixedExpenses, onSaveFixedExpenses }) {
 }
 
 // ─── Setup tab ──────────────────────────────────────────────────────────────
-function SetupTab({ configured, periods, uploadingSlot, onFile, onLabelChange }) {
+function SetupTab({ configured, reportPeriods, uploadingKind, onFile }) {
   const steps = [
-    { n: 1, title: 'Export your two hours reports', body: 'From your scheduling/POS system, run the attendance (hours) report for each period you want to compare — e.g. this week and last week.' },
-    { n: 2, title: 'Export your two sales reports', body: 'Run the service-sales (KPI) report for the exact same two date ranges. The Service Revenue column is the one this app reads.' },
-    { n: 3, title: 'Export your two store collection summaries', body: 'For the P&L tab, run the store-level KPI/collection export (one row per store, with a Total Collection column) for the same two date ranges.' },
-    { n: 4, title: 'Upload all six files below', body: 'Tap + on each slot: Hours, Sales, and Collection Summary for Period 1, then the same three for Period 2. The date range label fills in automatically from the file.' },
+    { n: 1, title: 'Export your hours report', body: 'From your scheduling/POS system, run the attendance (hours) report for whatever date range you want to look at.' },
+    { n: 2, title: 'Export your sales report', body: 'Run the service-sales (KPI) report for the same date range. The Service Revenue column is the one this app reads.' },
+    { n: 3, title: 'Export your store collection summary', body: 'For the P&L tab, run the store-level KPI/collection export (one row per store, with a Total Collection column) for the same date range.' },
+    { n: 4, title: 'Upload the three files below', body: 'Tap + on each box: Hours, Sales, and Collection Summary. Each file already has its own date range printed on it, so the app files it into the right period automatically — upload hours and sales first, then collections. No "Period 1" or "Period 2" to pick.' },
     { n: 5, title: 'Employees are grouped by store automatically', body: 'The "By Store" tab groups this same comparison by location. The employee → store list is built into the app — no upload needed for it.' },
-    { n: 6, title: 'Read the comparison', body: 'Employee Performance and By Store break down each period by Actual Hours, Service Rev, Retail Sales, Total Sales, Pay + Tax + Retail (hourly pay + 10% retail commission + 8% payroll tax), Production (what they made minus what they cost), two TSTH columns (service-only and total-sales), and Payroll % (pay ÷ total sales). Averages for both TSTH columns and Payroll % show at the bottom of each table. Only employees with both an hours record and a sales record for a period are included.' },
-    { n: 7, title: 'Nothing is ever lost', body: 'When you upload a new hours/sales file into a Period 1 or 2 slot that already holds a different date range, the old period is automatically saved to the History tab before it’s replaced — same with "Clear periods." Look back on any past period there any time.' },
-    { n: 8, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
+    { n: 6, title: 'Pick what to compare', body: 'Overview, Employee Performance, By Store, and P&L all share one date-range picker at the top: type in exactly the two ranges you want (A vs B), or tap "This month vs last month" for a quick MTD comparison. If a picked range spans more than one uploaded report, they\'re summed together automatically.' },
+    { n: 7, title: 'Read the comparison', body: 'Employee Performance and By Store break down each side by Actual Hours, Service Rev, Retail Sales, Total Sales, Pay + Tax + Retail (hourly pay + 10% retail commission + 8% payroll tax), Production (what they made minus what they cost), two TSTH columns (service-only and total-sales), and Payroll % (pay ÷ total sales). Averages for both TSTH columns and Payroll % show at the bottom of each table. Only employees with both an hours record and a sales record for a period are included.' },
+    { n: 8, title: 'Nothing is ever lost', body: 'Every report you upload becomes its own permanent period, filed by date — re-uploading the same date range just corrects it in place. Look back on any past period any time under the History tab.' },
+    { n: 9, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
   ];
   return (
     <div className="tab-content setup-tab">
@@ -827,20 +988,7 @@ function SetupTab({ configured, periods, uploadingSlot, onFile, onLabelChange })
           : '⚠ Supabase not connected — data is only saved on this device. See below to enable cross-device sync.'}
       </div>
 
-      <div className="upload-center-grid">
-        <PeriodPanel
-          periodKey="period1" periodNum="1" period={periods.period1}
-          uploadingSlot={uploadingSlot.period1}
-          onFile={(kind, file) => onFile('period1', kind, file)}
-          onLabelChange={text => onLabelChange('period1', text)}
-        />
-        <PeriodPanel
-          periodKey="period2" periodNum="2" period={periods.period2}
-          uploadingSlot={uploadingSlot.period2}
-          onFile={(kind, file) => onFile('period2', kind, file)}
-          onLabelChange={text => onLabelChange('period2', text)}
-        />
-      </div>
+      <UploadPanel reportPeriods={reportPeriods} uploadingKind={uploadingKind} onFile={onFile} />
 
       <div className="setup-section">
         {steps.map(s => (
@@ -875,21 +1023,21 @@ create policy "Allow all access"
 }
 
 // ─── History tab ────────────────────────────────────────────────────────────
-// Every period that gets replaced (Period 1/2 reused for a new date range, or
-// "Clear all") lands here first — nothing uploaded is ever deleted, only
-// moved out of the active comparison slots.
+// Every report period ever uploaded lives here permanently, newest first —
+// this is the same list the comparison tabs draw from, just browsable in
+// full rather than filtered down to two picked ranges.
 function HistoryEntryCard({ entry }) {
   const [expanded, setExpanded] = useState(false);
   const merged = useMemo(() => mergePeriod(entry.hours, entry.sales), [entry]);
   const collectionsTotal = entry.collections?.grandTotal?.totalCollection;
-  const archivedDate = new Date(entry.archivedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const updatedDate = entry.updatedAt ? new Date(entry.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : null;
 
   return (
     <div className="summary-card history-card">
       <div className="history-card-head">
         <div>
-          <p className="period-name">{entry.label || 'Untitled period'}</p>
-          <p className="history-archived-at">Archived {archivedDate}</p>
+          <p className="period-name">{periodDisplayLabel(entry)}</p>
+          {updatedDate && <p className="history-archived-at">Last updated {updatedDate}</p>}
         </div>
         {merged?.employees?.length > 0 && (
           <button className="btn-ghost btn-sm" onClick={() => setExpanded(x => !x)}>
@@ -951,22 +1099,26 @@ function HistoryEntryCard({ entry }) {
   );
 }
 
-function HistoryTab({ history }) {
-  if (!history.length) {
+function HistoryTab({ reportPeriods }) {
+  const sorted = useMemo(
+    () => [...reportPeriods].sort((a, b) => (b.fromDate || b.updatedAt || '').localeCompare(a.fromDate || a.updatedAt || '')),
+    [reportPeriods]
+  );
+  if (!sorted.length) {
     return (
       <div className="tab-content">
         <div className="empty-state">
-          <p className="empty-title">No archived periods yet</p>
-          <p>Whenever you upload a new report into Period 1 or Period 2 while it already holds a different date range, the old data is saved here automatically — nothing gets overwritten without being kept first.</p>
+          <p className="empty-title">No reports uploaded yet</p>
+          <p>Every report you upload shows up here automatically, filed by its own date range — nothing you upload is ever overwritten or lost.</p>
         </div>
       </div>
     );
   }
   return (
     <div className="tab-content">
-      <p className="section-label">Past periods, kept automatically whenever a Period 1/2 slot is reused for a new date range.</p>
+      <p className="section-label">Every period ever uploaded, newest first.</p>
       <div className="history-list">
-        {history.map(entry => <HistoryEntryCard key={entry.id} entry={entry} />)}
+        {sorted.map(entry => <HistoryEntryCard key={entry.id} entry={entry} />)}
       </div>
     </div>
   );
@@ -974,25 +1126,28 @@ function HistoryTab({ history }) {
 
 // ─── App ────────────────────────────────────────────────────────────────────
 const TABS = ['Overview', 'Employee Performance', 'By Store', 'P&L', 'Weekly Report', 'History', 'Setup'];
-const emptyPeriod = { label: '', hours: null, sales: null };
+const COMPARE_TABS = ['Overview', 'Employee Performance', 'By Store', 'P&L'];
+const emptyRange = { a: { from: '', to: '' }, b: { from: '', to: '' } };
 
 export default function App() {
-  const [periods, setPeriods] = useState({ period1: emptyPeriod, period2: emptyPeriod });
-  const [periodHistory, setPeriodHistory] = useState([]);
+  const [reportPeriods, setReportPeriods] = useState([]);
+  const [compareRange, setCompareRange] = useState(emptyRange);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('Overview');
   const [toast, setToast] = useState(null);
-  const [uploadingSlot, setUploadingSlot] = useState({}); // { period1: 'hours'|'sales'|'collections'|null, ... }
+  const [uploadingKind, setUploadingKind] = useState(null); // 'hours'|'sales'|'collections'|null
   const [fixedExpenses, setFixedExpenses] = useState({}); // { [storeName]: { rent, utilities, ... } }
   const [weeklyReportData, setWeeklyReportData] = useState(emptyWeeklyReportData());
 
   useEffect(() => {
     loadPeriods().then(({ data: saved, source, error }) => {
-      setPeriods({
-        period1: { ...emptyPeriod, ...(saved.period1 || {}) },
-        period2: { ...emptyPeriod, ...(saved.period2 || {}) },
-      });
-      setPeriodHistory(saved.period_history || []);
+      let list = saved.report_periods;
+      if (!list) {
+        list = migrateLegacyToReportPeriods(saved);
+        if (list.length) savePeriod('report_periods', list);
+      }
+      setReportPeriods(list);
+      setCompareRange(computeDefaultRange(list));
       // Seed any store that has no saved fixed expenses yet with the real
       // numbers from the March 2026 Contribution Report — once a store is
       // saved (even unchanged), its own values take over from here on.
@@ -1017,71 +1172,83 @@ export default function App() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  // Archives one or more outgoing period snapshots to history in a single
-  // save (avoids a lost-update race if two archive calls happen back to back).
-  const archivePeriods = useCallback((snapshots) => {
-    const entries = snapshots.filter(s => s && (s.hours || s.sales || s.collections)).map(makeHistoryEntry);
-    if (!entries.length) return;
-    setPeriodHistory(prev => {
-      const next = [...entries, ...prev];
-      savePeriod('period_history', next);
-      return next;
-    });
-  }, []);
-
-  const handleFile = useCallback(async (periodKey, kind, file) => {
-    setUploadingSlot(prev => ({ ...prev, [periodKey]: kind }));
+  const handleFile = useCallback(async (kind, file) => {
+    setUploadingKind(kind);
     try {
       const parsed = kind === 'hours' ? await parseHoursFile(file)
         : kind === 'sales' ? await parseSalesFile(file)
         : await parseStoreCollectionFile(file);
-      const cur = periods[periodKey] || emptyPeriod;
 
-      // A hours/sales file carries its own date-range label. If this slot
-      // already has a file of the same kind with a *different* date range,
-      // this is a new period being loaded in, not a correction — archive
-      // the whole outgoing period first, then start this slot fresh.
-      const existingLabel = cur[kind]?.dateRangeLabel;
-      const isNewPeriod = !!existingLabel && !!parsed.dateRangeLabel && existingLabel !== parsed.dateRangeLabel;
-
-      let next;
-      if (isNewPeriod) {
-        archivePeriods([cur]);
-        next = { label: parsed.dateRangeLabel || '', hours: null, sales: null, collections: null, [kind]: parsed };
-      } else {
-        next = { ...cur, [kind]: parsed };
-        if (!cur.label && parsed.dateRangeLabel) next.label = parsed.dateRangeLabel;
+      // Hours/sales files carry their own date range — match against an
+      // existing period with the same range (a correction) or start a new
+      // one. Collection-summary files have no date range of their own, so
+      // they file under whichever period was most recently touched.
+      let matchIdx = -1;
+      if (parsed.fromDate && parsed.toDate) {
+        matchIdx = reportPeriods.findIndex(p => p.fromDate === parsed.fromDate && p.toDate === parsed.toDate);
+      } else if (parsed.dateRangeLabel) {
+        matchIdx = reportPeriods.findIndex(p => p.label === parsed.dateRangeLabel);
+      } else if (kind === 'collections') {
+        matchIdx = reportPeriods.reduce((bestIdx, p, i) => (p.fromDate && (bestIdx === -1 || p.fromDate > reportPeriods[bestIdx].fromDate)) ? i : bestIdx, -1);
       }
 
-      setPeriods(prev => ({ ...prev, [periodKey]: next }));
-      const result = await savePeriod(periodKey, next);
+      const now = new Date().toISOString();
+      let next;
+      if (matchIdx >= 0) {
+        next = reportPeriods.map((p, i) => i === matchIdx
+          ? { ...p, [kind]: parsed, label: p.label || parsed.dateRangeLabel || '', updatedAt: now }
+          : p);
+      } else {
+        next = [...reportPeriods, {
+          id: newPeriodId(),
+          label: parsed.dateRangeLabel || (kind === 'collections' ? 'Collections upload' : 'Untitled period'),
+          fromDate: parsed.fromDate || null,
+          toDate: parsed.toDate || null,
+          hours: null, sales: null, collections: null,
+          [kind]: parsed,
+          updatedAt: now,
+        }];
+      }
+
+      setReportPeriods(next);
+      const result = await savePeriod('report_periods', next);
       const desc = kind === 'collections'
         ? `${Object.keys(parsed.stores).length} stores found`
         : `${parsed.employees.length} employees found`;
       if (isConfigured() && !result.ok) {
         showToast(`Loaded ${file.name}, but couldn't sync to Supabase (${result.error}) — only visible on this device`, 'error');
       } else {
-        showToast(isNewPeriod ? `New period detected — the old one is saved in History. Loaded ${file.name} (${desc})` : `Loaded ${file.name} — ${desc}`);
+        showToast(matchIdx >= 0 ? `Loaded ${file.name} — ${desc}` : `New period added — ${desc}`);
       }
     } catch (err) {
       showToast(err.message, 'error');
     } finally {
-      setUploadingSlot(prev => ({ ...prev, [periodKey]: null }));
+      setUploadingKind(null);
     }
-  }, [periods, archivePeriods]);
+  }, [reportPeriods]);
 
-  const handleLabelChange = useCallback((periodKey, text) => {
-    const next = { ...periods[periodKey], label: text };
-    setPeriods(prev => ({ ...prev, [periodKey]: next }));
-    savePeriod(periodKey, next);
-  }, [periods]);
+  const handleRangeChange = useCallback((side, field, value) => {
+    setCompareRange(prev => ({ ...prev, [side]: { ...prev[side], [field]: value } }));
+  }, []);
+
+  const handleMonthToDate = useCallback(() => {
+    const today = new Date();
+    const y = today.getFullYear(), m = today.getMonth();
+    const bFrom = toISODate(new Date(y, m, 1));
+    const bTo = toISODate(today);
+    const py = m === 0 ? y - 1 : y, pm = m === 0 ? 11 : m - 1;
+    const daysInPrevMonth = new Date(py, pm + 1, 0).getDate();
+    const aFrom = toISODate(new Date(py, pm, 1));
+    const aTo = toISODate(new Date(py, pm, Math.min(today.getDate(), daysInPrevMonth)));
+    setCompareRange({ a: { from: aFrom, to: aTo }, b: { from: bFrom, to: bTo } });
+  }, []);
 
   const handleClearAll = async () => {
-    if (!window.confirm("Clear Period 1 and Period 2? Both are saved to History first, so you can still look them up there — this only resets the two upload slots.")) return;
-    archivePeriods([periods.period1, periods.period2]);
-    setPeriods({ period1: emptyPeriod, period2: emptyPeriod });
-    await Promise.all([savePeriod('period1', emptyPeriod), savePeriod('period2', emptyPeriod)]);
-    showToast('Period 1 and 2 cleared — find them under History');
+    if (!window.confirm('Permanently delete every uploaded report and period? This cannot be undone.')) return;
+    setReportPeriods([]);
+    setCompareRange(emptyRange);
+    await savePeriod('report_periods', []);
+    showToast('All uploaded data deleted');
   };
 
   const handleSaveFixedExpenses = useCallback(async (storeName, values) => {
@@ -1095,11 +1262,14 @@ export default function App() {
     }
   }, [fixedExpenses]);
 
-  const merged1 = useMemo(() => mergePeriod(periods.period1?.hours, periods.period1?.sales), [periods.period1]);
-  const merged2 = useMemo(() => mergePeriod(periods.period2?.hours, periods.period2?.sales), [periods.period2]);
-  const label1 = periods.period1?.label || 'Period 1';
-  const label2 = periods.period2?.label || 'Period 2';
-  const hasAnyData = !!(periods.period1?.hours || periods.period1?.sales || periods.period2?.hours || periods.period2?.sales);
+  const periodsA = useMemo(() => periodsOverlappingRange(reportPeriods, compareRange.a), [reportPeriods, compareRange.a]);
+  const periodsB = useMemo(() => periodsOverlappingRange(reportPeriods, compareRange.b), [reportPeriods, compareRange.b]);
+  const mergedA = useMemo(() => mergePeriod(combineHours(periodsA), combineSales(periodsA)), [periodsA]);
+  const mergedB = useMemo(() => mergePeriod(combineHours(periodsB), combineSales(periodsB)), [periodsB]);
+  const collectionsB = useMemo(() => combineCollections(periodsB), [periodsB]);
+  const labelA = rangeLabel(compareRange.a);
+  const labelB = rangeLabel(compareRange.b);
+  const hasAnyData = reportPeriods.length > 0;
 
   if (loading) return <div className="app-loading"><div className="spinner large" /></div>;
 
@@ -1111,11 +1281,11 @@ export default function App() {
         <div className="header-left">
           <h1 className="app-title">Employee Performance</h1>
           <p className="app-subtitle">
-            {merged1?.location || merged2?.location || 'Labor hours vs. service sales, side by side'}
+            {mergedA?.location || mergedB?.location || 'Labor hours vs. service sales, side by side'}
           </p>
         </div>
         <div className="header-right">
-          {hasAnyData && <button className="btn-ghost" onClick={handleClearAll}>Clear periods</button>}
+          {hasAnyData && <button className="btn-ghost" onClick={handleClearAll}>Delete all data</button>}
         </div>
       </header>
 
@@ -1124,24 +1294,27 @@ export default function App() {
           <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>{t}</button>
         ))}
       </nav>
+      {COMPARE_TABS.includes(tab) && (
+        <CompareBar rangeA={compareRange.a} rangeB={compareRange.b} onRangeChange={handleRangeChange} onMonthToDate={handleMonthToDate} />
+      )}
       <main className="app-main">
-        {tab === 'Overview' && <OverviewTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
-        {tab === 'Employee Performance' && <EmployeesTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
-        {tab === 'By Store' && <ByStoreTab p1={merged1} p2={merged2} label1={label1} label2={label2} />}
+        {tab === 'Overview' && <OverviewTab p1={mergedA} p2={mergedB} label1={labelA} label2={labelB} />}
+        {tab === 'Employee Performance' && <EmployeesTab p1={mergedA} p2={mergedB} label1={labelA} label2={labelB} />}
+        {tab === 'By Store' && <ByStoreTab p1={mergedA} p2={mergedB} label1={labelA} label2={labelB} />}
         {tab === 'P&L' && (
           <PLTab
-            merged={merged2} collections={periods.period2?.collections}
+            merged={mergedB} collections={collectionsB}
             fixedExpenses={fixedExpenses} onSaveFixedExpenses={handleSaveFixedExpenses}
           />
         )}
         {tab === 'Weekly Report' && (
           <WeeklyReportTab data={weeklyReportData} onChange={setWeeklyReportData} showToast={showToast} />
         )}
-        {tab === 'History' && <HistoryTab history={periodHistory} />}
+        {tab === 'History' && <HistoryTab reportPeriods={reportPeriods} />}
         {tab === 'Setup' && (
           <SetupTab
-            configured={isConfigured()} periods={periods} uploadingSlot={uploadingSlot}
-            onFile={handleFile} onLabelChange={handleLabelChange}
+            configured={isConfigured()} reportPeriods={reportPeriods} uploadingKind={uploadingKind}
+            onFile={handleFile}
           />
         )}
       </main>
