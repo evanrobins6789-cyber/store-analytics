@@ -8,6 +8,8 @@ import { loadPeriods, savePeriod, clearPeriods, isConfigured } from './db';
 import { parseHoursFile, parseSalesFile, parseStoreCollectionFile, normalizeEmployeeName, COLLECTION_CATEGORIES } from './parser';
 import { STORE_ROSTER } from './storeRoster';
 import { getHourlyRate, totalPay } from './hourlyRates';
+import WeeklyReportTab from './weeklyReport/WeeklyReportTab';
+import { emptyWeeklyReportData, WEEKLY_REPORT_KEY } from './weeklyReport/store';
 import './App.css';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
@@ -877,7 +879,7 @@ create policy "Allow all access"
 }
 
 // ─── App ────────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Employee Performance', 'By Store', 'P&L', 'Setup'];
+const TABS = ['Overview', 'Employee Performance', 'By Store', 'P&L', 'Weekly Report', 'Setup'];
 const emptyPeriod = { label: '', hours: null, sales: null };
 
 export default function App() {
@@ -887,6 +889,7 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [uploadingSlot, setUploadingSlot] = useState({}); // { period1: 'hours'|'sales'|'collections'|null, ... }
   const [fixedExpenses, setFixedExpenses] = useState({}); // { [storeName]: { rent, utilities, ... } }
+  const [weeklyReportData, setWeeklyReportData] = useState(emptyWeeklyReportData());
 
   useEffect(() => {
     loadPeriods().then(({ data: saved, source, error }) => {
@@ -905,6 +908,7 @@ export default function App() {
       });
       setFixedExpenses(withDefaults);
       if (seeded) savePeriod('fixed_expenses', withDefaults);
+      setWeeklyReportData({ ...emptyWeeklyReportData(), ...(saved[WEEKLY_REPORT_KEY] || {}) });
       setLoading(false);
       if (isConfigured() && source === 'local') {
         showToast(`Couldn't reach Supabase (${error || 'unknown error'}) — showing this device's local data only`, 'error');
@@ -1005,6 +1009,9 @@ export default function App() {
             merged={merged2} collections={periods.period2?.collections}
             fixedExpenses={fixedExpenses} onSaveFixedExpenses={handleSaveFixedExpenses}
           />
+        )}
+        {tab === 'Weekly Report' && (
+          <WeeklyReportTab data={weeklyReportData} onChange={setWeeklyReportData} showToast={showToast} />
         )}
         {tab === 'Setup' && (
           <SetupTab

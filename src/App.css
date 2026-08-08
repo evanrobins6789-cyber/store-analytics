@@ -390,3 +390,150 @@
 .spinner.small { width: 14px; height: 14px; }
 .spinner.large { width: 32px; height: 32px; border-width: 3px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ─── Buttons (shared) ───────────────────────────────────────────────── */
+.btn-primary {
+  padding: 10px 18px; font-family: 'Work Sans', sans-serif; font-size: 13px; font-weight: 600;
+  color: #fff; background: var(--brass); border: none; border-radius: 8px; cursor: pointer;
+  align-self: flex-start;
+}
+.btn-primary:hover { background: var(--brass-deep); }
+.btn-primary:disabled { opacity: 0.6; cursor: default; }
+
+/* ─── Weekly Report tab ──────────────────────────────────────────────── */
+.wr-tab { display: flex; flex-direction: column; gap: 20px; max-width: 1100px; margin: 0 auto; }
+
+.wr-subnav {
+  display: flex; gap: 4px; padding-bottom: 10px; border-bottom: 1px solid var(--line);
+  overflow-x: auto; white-space: nowrap;
+}
+.wr-subtab {
+  background: none; border: none; cursor: pointer;
+  font-family: 'Work Sans', sans-serif; font-size: 12.5px; font-weight: 600;
+  color: var(--ink-soft); padding: 7px 12px; border-radius: 20px;
+}
+.wr-subtab.active { color: #fff; background: var(--brass); }
+.wr-subtab:not(.active):hover { background: var(--sage-bg); color: var(--ink); }
+
+.wr-panel-stack { display: flex; flex-direction: column; gap: 22px; }
+
+.wr-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.wr-pill-group {
+  display: flex; gap: 4px; background: var(--paper-card); padding: 4px;
+  border-radius: 10px; border: 1px solid var(--line);
+}
+.wr-pill {
+  border: none; cursor: pointer; border-radius: 7px; padding: 6px 13px;
+  font-family: 'Work Sans', sans-serif; font-size: 12.5px; font-weight: 600;
+  background: transparent; color: var(--ink);
+}
+.wr-pill.active { background: var(--brass); color: #fff; }
+
+.wr-block { display: flex; flex-direction: column; gap: 10px; }
+.wr-section-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.wr-section-title { font-family: 'Fraunces', serif; font-weight: 600; font-size: 17px; color: var(--ink); }
+.wr-studio-block { display: flex; flex-direction: column; gap: 18px; margin-top: 12px; padding-top: 18px; border-top: 1px solid var(--line); }
+.wr-emp-block { display: flex; flex-direction: column; gap: 6px; }
+.wr-emp-name { font-size: 13.5px; font-weight: 700; color: var(--ink); }
+.wr-bonus-table { margin-top: -2px; }
+
+.wr-muted { font-size: 12.5px; color: var(--ink-soft); }
+.wr-strong { font-weight: 700; }
+.wr-good { color: var(--sage); }
+.wr-bad { color: var(--rust); }
+.wr-hit { color: var(--sage); font-weight: 700; }
+.wr-net-line { font-size: 13.5px; font-weight: 700; }
+
+.wr-empty-state {
+  text-align: center; padding: 30px 20px; color: var(--ink-soft); font-size: 13px;
+  background: var(--paper-card); border: 1px solid var(--line); border-radius: 14px;
+}
+
+.wr-panel {
+  background: var(--paper-card); border: 1px solid var(--line); border-radius: 14px;
+  padding: 18px 20px; box-shadow: var(--shadow);
+}
+
+/* Tables */
+.wr-table-scroll {
+  overflow-x: auto; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--paper-card); box-shadow: var(--shadow);
+}
+.wr-table { width: 100%; border-collapse: collapse; font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+.wr-table th, .wr-table td { padding: 7px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.wr-table th {
+  background: var(--sage-bg); font-family: 'Work Sans', sans-serif; font-size: 11px;
+  font-weight: 700; color: var(--ink); position: sticky; top: 0;
+}
+.wr-table .wr-left { text-align: left; }
+.wr-table tbody tr:hover { background: rgba(242,121,12,0.06); }
+.wr-row-total td { background: #FFF2CC; font-weight: 700; }
+.wr-cell-current { font-weight: 700; border-left: 2px solid var(--brass); }
+.wr-badge-new { margin-left: 8px; font-size: 9.5px; font-weight: 700; color: var(--brass-deep); }
+.wr-empty-cell { text-align: center !important; color: var(--ink-soft); font-style: italic; }
+
+.wr-remove-btn {
+  margin-left: 8px; font-size: 10px; font-weight: 400; color: var(--ink-soft);
+  background: none; border: none; cursor: pointer; padding: 0; opacity: 0;
+  font-family: 'Work Sans', sans-serif;
+}
+.wr-table tr:hover .wr-remove-btn { opacity: 1; }
+
+.wr-link-btn {
+  font-family: 'Work Sans', sans-serif; font-size: 11px; color: var(--ink-soft);
+  background: none; border: none; cursor: pointer; padding: 0; text-decoration: underline;
+}
+.wr-link-btn:hover { color: var(--ink); }
+.wr-link-btn--warn { color: var(--rust); align-self: flex-start; }
+
+.wr-pending-badge {
+  margin-left: 10px; background: #FBEBD4; color: var(--brass-deep);
+  padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 700;
+}
+
+/* Goal thermometers */
+.wr-therm-panel {
+  background: var(--paper-card); border: 1px solid var(--line); border-radius: 14px;
+  padding: 18px 20px; display: flex; flex-direction: column; gap: 18px; max-width: 640px;
+  box-shadow: var(--shadow);
+}
+.wr-therm-row { display: flex; align-items: center; gap: 14px; }
+.wr-therm-label { width: 140px; flex-shrink: 0; font-size: 12.5px; font-weight: 700; color: var(--ink); font-family: 'Work Sans', sans-serif; }
+.wr-therm-track-wrap { display: flex; align-items: center; flex: 1; min-width: 0; }
+.wr-therm-bulb { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--line); margin-right: -10px; z-index: 1; flex-shrink: 0; }
+.wr-therm-track {
+  flex: 1; height: 24px; border-radius: 12px; border: 2px solid var(--line);
+  background: #F2EBE4; position: relative; overflow: hidden;
+}
+.wr-therm-fill { position: absolute; left: 0; top: 0; height: 100%; transition: width .4s ease; }
+.wr-therm-text {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 10.5px; font-weight: 700; color: var(--ink); font-family: 'IBM Plex Mono', monospace;
+  text-shadow: 0 0 4px rgba(255,255,255,.9), 0 0 4px rgba(255,255,255,.9);
+}
+.wr-therm-stat { width: 105px; flex-shrink: 0; text-align: right; font-family: 'Work Sans', sans-serif; }
+.wr-therm-pct { font-size: 13px; font-weight: 700; }
+.wr-therm-vs { font-size: 10px; color: var(--ink-soft); margin-top: 1px; }
+.wr-therm-pace { margin-left: 154px; margin-top: 4px; font-size: 11px; color: var(--ink-soft); font-style: italic; }
+.wr-therm-pace.wr-hit { font-style: normal; }
+
+/* Pacing charts */
+.wr-legend-row { display: flex; gap: 20px; flex-wrap: wrap; font-size: 12.5px; font-family: 'Work Sans', sans-serif; color: var(--ink-soft); }
+.wr-legend-item { display: flex; align-items: center; gap: 6px; }
+.wr-legend-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.wr-chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.wr-chart-empty { height: 200px; display: flex; align-items: center; justify-content: center; color: var(--ink-soft); font-size: 13px; }
+
+/* Forms */
+.wr-form { display: flex; flex-direction: column; gap: 14px; }
+.wr-form-row { display: flex; gap: 14px; flex-wrap: wrap; }
+.wr-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.wr-field {
+  display: flex; flex-direction: column; gap: 4px; font-family: 'Work Sans', sans-serif;
+  font-size: 12.5px; color: var(--ink-soft);
+}
+.wr-field input, .wr-field select {
+  padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line);
+  font-family: 'Work Sans', sans-serif; font-size: 13px; color: var(--ink); background: var(--paper);
+}
+.wr-field input:focus, .wr-field select:focus { outline: none; border-color: var(--brass); }
