@@ -1,13 +1,63 @@
 # Handoff — Waxing The City Analytics ("Employee Performance")
 
-Last updated: 2026-08-08, session that added the new "Weekly Report" tab
-(see below). Previous session (2026-07-28) diagnosed — but did not fix —
-the shared-data-not-syncing bug documented in the still-open issue directly
-below; that issue was not touched this session and is presumably still
-live. Session before that (2026-07-27) covered the theme change, the P&L
-tab, an hours-parsing bug fix, and a broken-deploy fix.
+Last updated: 2026-08-08 (second session that day) — added automatic period
+history (see below) plus an earlier visual pass (removed the balance-scale
+icon from Overview, made data-table fonts bigger/easier to read). Same-day
+earlier session added the new "Weekly Report" tab (see below that). Session
+before (2026-07-28) diagnosed — but did not fix — the shared-data-not-syncing
+bug documented in the still-open issue directly below; still live. Session
+before that (2026-07-27) covered the theme change, the P&L tab, an
+hours-parsing bug fix, and a broken-deploy fix.
 
-## NEW THIS SESSION — Weekly Report tab, ported from Lauren's separate site (2026-08-08)
+## NEW THIS SESSION — Automatic period history, nothing uploaded is ever lost (2026-08-08)
+
+Previously Period 1 and Period 2 were plain overwrite slots: uploading a new
+hours/sales file into a slot that already had data silently discarded the
+old one, with no way to look back. User asked for uploads to be historical.
+
+- **Detection**: `parseHoursFile`/`parseSalesFile` already return a
+  `dateRangeLabel` parsed from the file itself (see `parser.js`). In
+  `handleFile` (`App.js`), if the slot being uploaded into already holds a
+  file of the *same kind* with a *different* `dateRangeLabel`, that's
+  treated as a new period being loaded in (not a correction) — the whole
+  outgoing period (`label`/`hours`/`sales`/`collections`) is archived first,
+  then the slot resets to just the newly uploaded file. If the date range
+  matches (or there's nothing to compare, e.g. a lone collections
+  re-upload), it's treated as a same-period correction and just overwrites
+  in place — no archive noise for typo fixes.
+- **Storage**: archived snapshots go into a new `period_history` key (an
+  array, newest first) in the same generic `periods` table — same
+  `savePeriod`/`loadPeriods` pattern as `fixed_expenses` and
+  `weekly_report`. No schema change. Each entry: `{ id, archivedAt, label,
+  hours, sales, collections }`.
+- **New History tab** (`HistoryTab`/`HistoryEntryCard` in `App.js`, between
+  Weekly Report and Setup): lists every archived period with the same
+  summary stats as an Overview card (hours, service revenue, TSTH, payroll,
+  plus store-collections total if present) and an expandable per-employee
+  table, reusing `mergePeriod`.
+- **"Clear all" → "Clear periods"**: now archives Period 1 and 2 (via the
+  same `archivePeriods` helper) before resetting just those two keys,
+  instead of calling the old `clearPeriods()` in `db.js`, which ran `delete
+  from periods` — i.e. it wiped the *entire* table including
+  `fixed_expenses` and `weekly_report`, not just the two period slots the
+  button implied. That function is now deleted from `db.js` since nothing
+  needs a delete-everything path anymore.
+- **Known gap — depends on the still-open Supabase DNS issue below.** Like
+  everything else in this app, `period_history` only actually syncs
+  cross-device once that's fixed; until then it's per-device via
+  localStorage same as period1/period2 already are.
+- **Not done**: no "restore an archived period back into Period 1/2 for a
+  live side-by-side" action — History is read-only browsing for now. Would
+  be a natural follow-up if the user wants to re-compare an old period
+  against a current one instead of just eyeballing the archived summary.
+- Verified via `CI=true npm run build` only (same no-browser-automation gap
+  as every other UI session on this machine) — nobody has actually
+  triggered the archive-on-reupload path by hand in a real browser yet.
+  Before relying on it: upload an hours file into Period 1, then upload a
+  *different date range's* hours file into the same slot, and confirm the
+  old one shows up under History with correct numbers.
+
+## Weekly Report tab, ported from Lauren's separate site (2026-08-08, earlier session)
 
 Evan's sister Lauren built a separate Next.js site (`wtc-weekly-report`,
 local copy at `OneDrive\Desktop\WTC\Laurens Site\wtc-weekly-report-main`)
@@ -121,7 +171,7 @@ GitHub `evanrobins6789-cyber/store-analytics`). Data persists to Supabase
 store — see "Data model" below) with a localStorage fallback when Supabase
 isn't reachable.
 
-Tabs: **Overview**, **Employee Performance**, **By Store**, **P&L**, **Setup**.
+Tabs: **Overview**, **Employee Performance**, **By Store**, **P&L**, **Weekly Report**, **History**, **Setup**.
 
 ## File map
 
