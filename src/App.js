@@ -454,7 +454,7 @@ function PeriodSummaryCard({ label, data, deltaHours, deltaRevenue, deltaRate, d
     return (
       <div className="summary-card summary-card--empty">
         <p className="period-name">{label}</p>
-        <p className="empty-note">No files uploaded yet</p>
+        <p className="empty-note">No uploaded report falls in this date range — check the picker above, or upload one on the Setup tab.</p>
       </div>
     );
   }
@@ -716,7 +716,7 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
   ];
 
   if (!rows.length) {
-    return <div className="empty-state"><p className="empty-title">No employees yet</p><p>Upload at least one hours or sales file to see this table.</p></div>;
+    return <div className="empty-state"><p className="empty-title">No employees yet</p><p>No uploaded report falls in the picked date range(s) — check the picker above, or upload one on the Setup tab.</p></div>;
   }
 
   return (
@@ -781,7 +781,7 @@ function ByStoreTab({ p1, p2, label1, label2 }) {
   }, [rows, sortBy]);
 
   if (!rows.length) {
-    return <div className="empty-state"><p className="empty-title">No employees yet</p><p>Upload hours and sales files with matching data for both periods first.</p></div>;
+    return <div className="empty-state"><p className="empty-title">No employees yet</p><p>No uploaded report falls in the picked date range(s) — check the picker above, or upload one on the Setup tab.</p></div>;
   }
 
   return (
@@ -1211,6 +1211,14 @@ export default function App() {
       }
 
       setReportPeriods(next);
+      // If neither side of the compare picker points at real data yet (the
+      // very first upload, or right after "Delete all data"), fill it in
+      // from what's now available so the comparison tabs actually populate
+      // instead of sitting on empty date pickers until the user notices.
+      setCompareRange(prev => {
+        const untouched = !prev.a.from && !prev.a.to && !prev.b.from && !prev.b.to;
+        return untouched ? computeDefaultRange(next) : prev;
+      });
       const result = await savePeriod('report_periods', next);
       const desc = kind === 'collections'
         ? `${Object.keys(parsed.stores).length} stores found`
