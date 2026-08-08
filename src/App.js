@@ -4,7 +4,7 @@ import {
   Chart as ChartJS,
   CategoryScale, LinearScale, BarElement, Tooltip, Legend
 } from 'chart.js';
-import { loadPeriods, savePeriod, clearPeriods, isConfigured } from './db';
+import { loadPeriods, savePeriod, isConfigured } from './db';
 import { parseHoursFile, parseSalesFile, parseStoreCollectionFile, normalizeEmployeeName, COLLECTION_CATEGORIES } from './parser';
 import { STORE_ROSTER } from './storeRoster';
 import { getHourlyRate, totalPay } from './hourlyRates';
@@ -27,6 +27,19 @@ function Badge({ curr, prev }) {
   if (pct === null || isNaN(pct)) return null;
   const up = parseFloat(pct) >= 0;
   return <span className={`badge ${up ? 'badge-up' : 'badge-dn'}`}>{up ? '+' : ''}{pct}%</span>;
+}
+
+// ─── History: snapshot a period slot before it's overwritten, so re-using ──
+// ─── Period 1/2 for a new date range never destroys the old one ────────────
+function makeHistoryEntry(snapshot) {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    archivedAt: new Date().toISOString(),
+    label: snapshot?.label || '',
+    hours: snapshot?.hours || null,
+    sales: snapshot?.sales || null,
+    collections: snapshot?.collections || null,
+  };
 }
 
 // ─── Merge one period's hours + sales into a single comparable dataset ─────
@@ -803,7 +816,8 @@ function SetupTab({ configured, periods, uploadingSlot, onFile, onLabelChange })
     { n: 4, title: 'Upload all six files below', body: 'Tap + on each slot: Hours, Sales, and Collection Summary for Period 1, then the same three for Period 2. The date range label fills in automatically from the file.' },
     { n: 5, title: 'Employees are grouped by store automatically', body: 'The "By Store" tab groups this same comparison by location. The employee → store list is built into the app — no upload needed for it.' },
     { n: 6, title: 'Read the comparison', body: 'Employee Performance and By Store break down each period by Actual Hours, Service Rev, Retail Sales, Total Sales, Pay + Tax + Retail (hourly pay + 10% retail commission + 8% payroll tax), Production (what they made minus what they cost), two TSTH columns (service-only and total-sales), and Payroll % (pay ÷ total sales). Averages for both TSTH columns and Payroll % show at the bottom of each table. Only employees with both an hours record and a sales record for a period are included.' },
-    { n: 7, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
+    { n: 7, title: 'Nothing is ever lost', body: 'When you upload a new hours/sales file into a Period 1 or 2 slot that already holds a different date range, the old period is automatically saved to the History tab before it’s replaced — same with "Clear periods." Look back on any past period there any time.' },
+    { n: 8, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
   ];
   return (
     <div className="tab-content setup-tab">
@@ -860,12 +874,111 @@ create policy "Allow all access"
   );
 }
 
+// ─── History tab ────────────────────────────────────────────────────────────
+// Every period that gets replaced (Period 1/2 reused for a new date range, or
+// "Clear all") lands here first — nothing uploaded is ever deleted, only
+// moved out of the active comparison slots.
+function HistoryEntryCard({ entry }) {
+  const [expanded, setExpanded] = useState(false);
+  const merged = useMemo(() => mergePeriod(entry.hours, entry.sales), [entry]);
+  const collectionsTotal = entry.collections?.grandTotal?.totalCollection;
+  const archivedDate = new Date(entry.archivedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  return (
+    <div className="summary-card history-card">
+      <div className="history-card-head">
+        <div>
+          <p className="period-name">{entry.label || 'Untitled period'}</p>
+          <p className="history-archived-at">Archived {archivedDate}</p>
+        </div>
+        {merged?.employees?.length > 0 && (
+          <button className="btn-ghost btn-sm" onClick={() => setExpanded(x => !x)}>
+            {expanded ? 'Hide' : 'Show'} employees
+          </button>
+        )}
+      </div>
+
+      {merged ? (
+        <>
+          <div className="summary-row">
+            <span className="summary-label">Hours worked</span>
+            <span className="summary-value">{merged.totalHoursDisplay || '—'}</span>
+          </div>
+          <div className="summary-row">
+            <span className="summary-label">Service revenue</span>
+            <span className="summary-value">{merged.totalRevenue != null ? fmt$(merged.totalRevenue) : '—'}</span>
+          </div>
+          <div className="summary-row summary-row--highlight">
+            <span className="summary-label">TSTH</span>
+            <span className="summary-value">{fmtRate(merged.totalRevPerHour)}</span>
+          </div>
+          <div className="summary-row">
+            <span className="summary-label">Total payroll</span>
+            <span className="summary-value">{merged.totalPayroll != null ? fmt$(merged.totalPayroll) : '—'}</span>
+          </div>
+          {collectionsTotal != null && (
+            <div className="summary-row">
+              <span className="summary-label">Store collections</span>
+              <span className="summary-value">{fmt$(collectionsTotal)}</span>
+            </div>
+          )}
+        </>
+      ) : (
+        <p className="empty-note">No hours/sales data in this snapshot</p>
+      )}
+
+      {expanded && merged?.employees?.length > 0 && (
+        <div className="ledger-scroll history-emp-scroll">
+          <table className="ledger-table">
+            <thead>
+              <tr><th className="ledger-name-col">Employee</th><th>Hours</th><th>Service Rev</th><th>Retail Sales</th><th>TSTH</th></tr>
+            </thead>
+            <tbody>
+              {merged.employees.map(e => (
+                <tr key={e.name}>
+                  <td className="ledger-name-col">{e.name}</td>
+                  <td>{e.hoursDisplay || '—'}</td>
+                  <td>{fmt$(e.serviceRevenue)}</td>
+                  <td>{fmt$(e.retailSales)}</td>
+                  <td className="ledger-rate">{fmtRate(e.revPerHour)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HistoryTab({ history }) {
+  if (!history.length) {
+    return (
+      <div className="tab-content">
+        <div className="empty-state">
+          <p className="empty-title">No archived periods yet</p>
+          <p>Whenever you upload a new report into Period 1 or Period 2 while it already holds a different date range, the old data is saved here automatically — nothing gets overwritten without being kept first.</p>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="tab-content">
+      <p className="section-label">Past periods, kept automatically whenever a Period 1/2 slot is reused for a new date range.</p>
+      <div className="history-list">
+        {history.map(entry => <HistoryEntryCard key={entry.id} entry={entry} />)}
+      </div>
+    </div>
+  );
+}
+
 // ─── App ────────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Employee Performance', 'By Store', 'P&L', 'Weekly Report', 'Setup'];
+const TABS = ['Overview', 'Employee Performance', 'By Store', 'P&L', 'Weekly Report', 'History', 'Setup'];
 const emptyPeriod = { label: '', hours: null, sales: null };
 
 export default function App() {
   const [periods, setPeriods] = useState({ period1: emptyPeriod, period2: emptyPeriod });
+  const [periodHistory, setPeriodHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('Overview');
   const [toast, setToast] = useState(null);
@@ -879,6 +992,7 @@ export default function App() {
         period1: { ...emptyPeriod, ...(saved.period1 || {}) },
         period2: { ...emptyPeriod, ...(saved.period2 || {}) },
       });
+      setPeriodHistory(saved.period_history || []);
       // Seed any store that has no saved fixed expenses yet with the real
       // numbers from the March 2026 Contribution Report — once a store is
       // saved (even unchanged), its own values take over from here on.
@@ -903,6 +1017,18 @@ export default function App() {
     setTimeout(() => setToast(null), 3500);
   };
 
+  // Archives one or more outgoing period snapshots to history in a single
+  // save (avoids a lost-update race if two archive calls happen back to back).
+  const archivePeriods = useCallback((snapshots) => {
+    const entries = snapshots.filter(s => s && (s.hours || s.sales || s.collections)).map(makeHistoryEntry);
+    if (!entries.length) return;
+    setPeriodHistory(prev => {
+      const next = [...entries, ...prev];
+      savePeriod('period_history', next);
+      return next;
+    });
+  }, []);
+
   const handleFile = useCallback(async (periodKey, kind, file) => {
     setUploadingSlot(prev => ({ ...prev, [periodKey]: kind }));
     try {
@@ -910,8 +1036,23 @@ export default function App() {
         : kind === 'sales' ? await parseSalesFile(file)
         : await parseStoreCollectionFile(file);
       const cur = periods[periodKey] || emptyPeriod;
-      const next = { ...cur, [kind]: parsed };
-      if (!cur.label && parsed.dateRangeLabel) next.label = parsed.dateRangeLabel;
+
+      // A hours/sales file carries its own date-range label. If this slot
+      // already has a file of the same kind with a *different* date range,
+      // this is a new period being loaded in, not a correction — archive
+      // the whole outgoing period first, then start this slot fresh.
+      const existingLabel = cur[kind]?.dateRangeLabel;
+      const isNewPeriod = !!existingLabel && !!parsed.dateRangeLabel && existingLabel !== parsed.dateRangeLabel;
+
+      let next;
+      if (isNewPeriod) {
+        archivePeriods([cur]);
+        next = { label: parsed.dateRangeLabel || '', hours: null, sales: null, collections: null, [kind]: parsed };
+      } else {
+        next = { ...cur, [kind]: parsed };
+        if (!cur.label && parsed.dateRangeLabel) next.label = parsed.dateRangeLabel;
+      }
+
       setPeriods(prev => ({ ...prev, [periodKey]: next }));
       const result = await savePeriod(periodKey, next);
       const desc = kind === 'collections'
@@ -920,14 +1061,14 @@ export default function App() {
       if (isConfigured() && !result.ok) {
         showToast(`Loaded ${file.name}, but couldn't sync to Supabase (${result.error}) — only visible on this device`, 'error');
       } else {
-        showToast(`Loaded ${file.name} — ${desc}`);
+        showToast(isNewPeriod ? `New period detected — the old one is saved in History. Loaded ${file.name} (${desc})` : `Loaded ${file.name} — ${desc}`);
       }
     } catch (err) {
       showToast(err.message, 'error');
     } finally {
       setUploadingSlot(prev => ({ ...prev, [periodKey]: null }));
     }
-  }, [periods]);
+  }, [periods, archivePeriods]);
 
   const handleLabelChange = useCallback((periodKey, text) => {
     const next = { ...periods[periodKey], label: text };
@@ -936,10 +1077,11 @@ export default function App() {
   }, [periods]);
 
   const handleClearAll = async () => {
-    if (!window.confirm('Clear all uploaded files and start over? This cannot be undone.')) return;
-    await clearPeriods();
+    if (!window.confirm("Clear Period 1 and Period 2? Both are saved to History first, so you can still look them up there — this only resets the two upload slots.")) return;
+    archivePeriods([periods.period1, periods.period2]);
     setPeriods({ period1: emptyPeriod, period2: emptyPeriod });
-    showToast('All data cleared');
+    await Promise.all([savePeriod('period1', emptyPeriod), savePeriod('period2', emptyPeriod)]);
+    showToast('Period 1 and 2 cleared — find them under History');
   };
 
   const handleSaveFixedExpenses = useCallback(async (storeName, values) => {
@@ -973,7 +1115,7 @@ export default function App() {
           </p>
         </div>
         <div className="header-right">
-          {hasAnyData && <button className="btn-ghost" onClick={handleClearAll}>Clear all</button>}
+          {hasAnyData && <button className="btn-ghost" onClick={handleClearAll}>Clear periods</button>}
         </div>
       </header>
 
@@ -995,6 +1137,7 @@ export default function App() {
         {tab === 'Weekly Report' && (
           <WeeklyReportTab data={weeklyReportData} onChange={setWeeklyReportData} showToast={showToast} />
         )}
+        {tab === 'History' && <HistoryTab history={periodHistory} />}
         {tab === 'Setup' && (
           <SetupTab
             configured={isConfigured()} periods={periods} uploadingSlot={uploadingSlot}

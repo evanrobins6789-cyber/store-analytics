@@ -57,10 +57,3 @@ export async function savePeriod(periodId, payload) {
   } catch {}
   return { ok: !error, error };
 }
-
-export async function clearPeriods() {
-  if (supabase) {
-    await supabase.from('periods').delete().neq('period_id', '');
-  }
-  localStorage.removeItem(LOCAL_KEY);
-}
