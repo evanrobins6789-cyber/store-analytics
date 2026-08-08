@@ -1,19 +1,76 @@
 # Handoff — Waxing The City Analytics ("Employee Performance")
 
-Last updated: 2026-08-08 (fourth touch that day) — fixed a real bug in the
-report-periods rework from earlier the same session: the user tried
-uploading right after the change shipped and reported "the main page
-isn't populating." Root cause and fix are in "Report periods didn't show
-up anywhere" below, right under the feature that introduced it. Same day,
-earlier: replaced the whole Period 1/2 upload model with date-driven
+Last updated: 2026-08-08 (fifth touch that day) — **STILL BROKEN, pick this
+up first next time.** The compare-range fix (fourth touch, below) did not
+resolve it — user re-tested and reports uploads still don't populate the
+main page. Out of time to keep debugging this session; see "STILL OPEN —
+uploads still not populating after the compare-range fix" right below for
+the strongest untested hypothesis and exactly how to check it. Earlier the
+same day: replaced the whole Period 1/2 upload model with date-driven
 report periods and a free-form comparison picker (supersedes "automatic
 period history" from earlier still — user asked to drop Period 1/2 slots
 entirely once that landed). Before that: added the new "Weekly Report" tab
 plus a visual pass (removed the balance-scale icon, bigger data fonts).
 Session before (2026-07-28) diagnosed — but did not fix — the
-shared-data-not-syncing bug documented in the still-open issue directly
+shared-data-not-syncing bug documented in the still-open issue further
 below; still live. Session before that (2026-07-27) covered the theme
 change, the P&L tab, an hours-parsing bug fix, and a broken-deploy fix.
+
+## STILL OPEN — uploads still not populating after the compare-range fix (2026-08-08, fifth touch)
+
+The fourth-touch fix below (backfilling the CompareBar when both sides are
+blank) did not fix it — user tested again after that deploy and it's still
+broken. Didn't get to dig further this session; here's the strongest
+remaining hypothesis, ranked, for whoever picks this up next.
+
+**Most likely: `fromDate`/`toDate` parsing is failing on the user's real
+report files, even though the old `dateRangeLabel` text extraction still
+works.** `periodsOverlappingRange` (in `App.js`) hard-requires
+`p.fromDate && p.toDate` to match a period into *any* picked range — if
+those come back `null`, that period can never appear in Overview/Employee
+Performance/By Store/P&L no matter what the picker is set to, even though
+it'll still show up fine in the History tab (which doesn't filter by
+date). `fromDate`/`toDate` are brand new this session (`parseLooseDate()`
+in `parser.js`, added alongside the Period 1/2 removal) — unlike the raw
+`dateRangeLabel` text extraction, which has worked against real files for
+months (see the 2026-07-27 hours-parsing bug fix entry further down,
+which was verified against a real `Attendance(40).xlsx`). `parseLooseDate`
+was only ever tested against fabricated strings like `"07/01/2026"` in a
+throwaway Node script — never against the actual date text a real Zenoti/
+ADP export prints, which might use a format `new Date(...)` doesn't
+parse (e.g. a different separator, a weekday name, a locale quirk) and
+silently returns `null` with no error surfaced anywhere.
+
+**Fastest way to confirm this next session:** upload one real hours file,
+then check the History tab entry it created. If the entry's label reads a
+real date range (e.g. "7/1/2026 – 7/15/2026") but the period still never
+shows up in Overview/Employee Performance no matter what's in the
+CompareBar's date pickers, that confirms `fromDate`/`toDate` are `null`
+while `dateRangeLabel` is fine — i.e. exactly this bug. (If the label
+itself is also wrong/missing — "Untitled period" — the problem is further
+upstream, in `findDateRange`'s regex not matching this file's header at
+all, which would be a preexisting issue unrelated to this session's work.)
+
+**If confirmed, two ways to fix, not mutually exclusive:**
+1. Fix `parseLooseDate` (in `parser.js`) to actually handle the real date
+   text format — need one real exported file (or just the "From : ... To
+   : ..." header line copy-pasted) from the user to know what it looks
+   like; nothing in this repo currently captures a real sample.
+2. Make the app degrade gracefully instead of hard-failing: have
+   `periodsOverlappingRange`/`computeDefaultRange` fall back to matching
+   on `dateRangeLabel` string equality when `fromDate`/`toDate` are
+   missing, so a parse failure loses the "pick an arbitrary date range"
+   flexibility for that period but doesn't silently make it disappear
+   from every comparison tab.
+
+**Other things to rule out first, cheaper than the above:** the user may
+not have hard-refreshed since the deploy (no service worker is registered
+in `src/index.js`, so this shouldn't matter, but worth a sanity check —
+have them close and reopen the tab/PWA). Also confirm in the Vercel
+dashboard that the deployment actually built from commit `d55d388` or
+later (Claude has no Vercel login to check this directly).
+
+## FIX (did not fully resolve it — see STILL OPEN above) — report periods didn't show up anywhere after upload (2026-08-08, fourth touch)
 
 ## FIX — report periods didn't show up anywhere after upload (2026-08-08, fourth touch)
 
