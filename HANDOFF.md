@@ -1,15 +1,84 @@
 # Handoff — Waxing The City Analytics ("Employee Performance")
 
-Last updated: 2026-08-08 (second session that day) — added automatic period
-history (see below) plus an earlier visual pass (removed the balance-scale
-icon from Overview, made data-table fonts bigger/easier to read). Same-day
-earlier session added the new "Weekly Report" tab (see below that). Session
-before (2026-07-28) diagnosed — but did not fix — the shared-data-not-syncing
-bug documented in the still-open issue directly below; still live. Session
-before that (2026-07-27) covered the theme change, the P&L tab, an
-hours-parsing bug fix, and a broken-deploy fix.
+Last updated: 2026-08-08 (third session that day) — replaced the whole
+Period 1/2 upload model with date-driven report periods and a free-form
+comparison picker (see below; this supersedes the "automatic period
+history" work from earlier the same day — same underlying idea, but the
+user asked to drop Period 1/2 slots entirely). Earlier that day: added
+automatic period history, then before that added the new "Weekly Report"
+tab plus a visual pass (removed the balance-scale icon, bigger data
+fonts). Session before (2026-07-28) diagnosed — but did not fix — the
+shared-data-not-syncing bug documented in the still-open issue directly
+below; still live. Session before that (2026-07-27) covered the theme
+change, the P&L tab, an hours-parsing bug fix, and a broken-deploy fix.
 
-## NEW THIS SESSION — Automatic period history, nothing uploaded is ever lost (2026-08-08)
+## NEW THIS SESSION — Period 1/2 replaced by date-driven report periods (2026-08-08, third session)
+
+The user asked: no more "Period 1"/"Period 2" in the uploads tab, just
+Hours / Service Sales / Collections drop boxes — every report already has
+a date range printed on it, so the app shouldn't need the user to manually
+assign uploads to a slot. Then, when asked how Overview/Employee
+Performance/By Store should still do their side-by-side comparison without
+slots, the user wanted **their own two-date-range picker** (not just an
+auto "latest vs previous"), plus a **"month to date vs prior month"**
+shortcut button.
+
+- **Storage model replaced**: `period1`/`period2`/`period_history` (from
+  the "automatic period history" feature earlier that day) are gone,
+  replaced by one key, `report_periods` — a flat, ever-growing array of
+  `{ id, label, fromDate, toDate, hours, sales, collections, updatedAt }`.
+  A one-time migration in `App.js` (`migrateLegacyToReportPeriods`) runs
+  once on load if `report_periods` doesn't exist yet, folding any existing
+  `period1`/`period2`/`period_history` data into the new list — so data
+  already uploaded before this deploy isn't lost. Same generic `periods`
+  table/`savePeriod` pattern as always, no schema change.
+- **Real dates, not just a label**: `parser.js` now parses the "From : …
+  To : …" text into actual `fromDate`/`toDate` ISO (`YYYY-MM-DD`) fields
+  via a new `parseLooseDate()` (built from local calendar fields, not
+  `toISOString()`, to avoid a UTC-conversion off-by-one near midnight) —
+  alongside the pre-existing `dateRangeLabel` string. Collections reports
+  still have no date range printed on them (confirmed earlier session) —
+  uploading one files it under whichever period was most recently touched.
+- **Upload matching**: in `handleFile` (`App.js`), a new hours/sales
+  upload is matched against an existing `report_periods` entry with the
+  *same* `fromDate`/`toDate` (a correction, merged in place) or creates a
+  brand-new entry (a new period) if no match — no more "is this the same
+  period or a new one" heuristic needed, the date range answers it
+  directly.
+- **New CompareBar** (top of Overview/Employee Performance/By Store/P&L,
+  not shown on Weekly Report/History/Setup): two independent date-range
+  pickers (`<input type="date">` × 2 per side, labeled A/B) plus a "This
+  month vs last month" button that sets A = 1st-of-prior-month through the
+  same day-of-month, B = 1st-of-this-month through today. If a picked
+  range spans more than one uploaded period (e.g. a full calendar month
+  made of two semi-monthly pay periods), they're summed together via new
+  `combineHours`/`combineSales`/`combineCollections` before going through
+  the existing `mergePeriod` — every downstream display component
+  (`PeriodSummaryCard`, `LedgerTable`, `PLTab`, etc.) needed **zero**
+  changes, they just consume whatever merged data they're handed.
+  Default range on load: the two most recent distinct periods.
+- **History tab** now lists every uploaded period permanently (sourced
+  from the same `report_periods` list), not just ones that got replaced —
+  a superset of what the earlier "automatic period history" version did.
+- **"Clear all" → "Delete all data"**: now a real, explicit, confirmed
+  delete of `report_periods`. Periods can no longer be lost by accident
+  the way Period 1/2 reuse used to risk, so there's no more soft-archive
+  step here — this button means it.
+- **Not done**: no per-entry delete/edit from the History tab (e.g. to fix
+  a bad upload) — would be a reasonable follow-up if it comes up. Also no
+  UI for renaming a period's auto-filled label.
+- Verified via `CI=true npm run build` plus **standalone Node scripts**
+  (same no-browser-automation gap as every session this week) checking
+  `parseLooseDate` against sample date strings, the month-to-date range
+  math including a Dec→Jan year rollover and a Mar→Feb 28-day rollover,
+  and the date-range overlap filter — but nobody has uploaded a real file
+  through the actual UI since this change. Before trusting it: upload an
+  hours file, confirm it lands as a new History entry with the right date
+  range, re-upload the same file (or same date range) and confirm it
+  corrects in place rather than duplicating, then try the compare picker
+  and "This month vs last month" button with real data.
+
+## Automatic period history, nothing uploaded is ever lost (2026-08-08, earlier session — superseded by the above)
 
 Previously Period 1 and Period 2 were plain overwrite slots: uploading a new
 hours/sales file into a slot that already had data silently discarded the
@@ -261,12 +330,20 @@ Tabs: **Overview**, **Employee Performance**, **By Store**, **P&L**, **Weekly Re
 ## Data model (Supabase `periods` table)
 
 Generic `period_id text primary key, payload jsonb`. Keys in use:
-- `period1`, `period2` — `{ label, hours, sales, collections }`, each of
-  `hours`/`sales`/`collections` being the parsed-file object or `null`.
+- `report_periods` — **current, as of the third 2026-08-08 session.** An
+  array of `{ id, label, fromDate, toDate, hours, sales, collections,
+  updatedAt }`, one entry per uploaded date range, permanent (see "Period
+  1/2 replaced by date-driven report periods" above). `period1`, `period2`,
+  and `period_history` are legacy keys from before that session — no
+  longer written, but left in Supabase for the one-time migration path
+  (`migrateLegacyToReportPeriods` in `App.js`) to read on an account that
+  hasn't loaded the app since the change yet.
 - `fixed_expenses` — `{ [STORE_NAME]: { rent, utilities, insurance,
   licenses, alarmMonitoring, accounting, bankFees, infoSystems, royalties,
   supplies, advertising, maintenance, paidouts, refunds } }`, keyed by the
   exact uppercase store names from `STORE_ROSTER`.
+- `weekly_report` — the whole Weekly Report tab's data (see the "Weekly
+  Report tab" section above), a single nested JSON blob.
 
 No new Supabase tables/SQL were needed for any of this — everything reuses
 the one `periods` table and its existing RLS policy.
@@ -284,9 +361,10 @@ the one `periods` table and its existing RLS policy.
   only fills in a store the first time it has *no* saved data — once the
   user hits Save on a store's form (even unchanged), their own numbers
   take over permanently for that store.
-- **P&L now only reflects Period 2.** If the user relabels which period
-  is "current" (e.g. starts using Period 1 for the newer month), the P&L
-  won't follow — it's hardcoded to Period 2 in `App.js`'s render call.
+- **P&L now only reflects Range B** of the CompareBar (see the third
+  2026-08-08 session above) — it's hardcoded to `mergedB`/`collectionsB` in
+  `App.js`'s render call, same "current side only" behavior as before,
+  just no longer tied to a literal "Period 2" slot.
 - The store collection KPI report has no date range in the file itself
   (unlike Hours/Sales, which have a "From/To" line) — no date label is
   shown in the P&L now anyway, so this doesn't currently matter, but if
