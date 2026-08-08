@@ -1,9 +1,73 @@
 # Handoff — Waxing The City Analytics ("Employee Performance")
 
-Last updated: 2026-07-28, session covering a diagnosis (not yet fixed) of
-the shared-data-not-syncing bug. Previous session (2026-07-27) covered the
-theme change, the P&L tab (built three times, in increasingly different
-directions), an hours-parsing bug fix, and a broken-deploy fix.
+Last updated: 2026-08-08, session that added the new "Weekly Report" tab
+(see below). Previous session (2026-07-28) diagnosed — but did not fix —
+the shared-data-not-syncing bug documented in the still-open issue directly
+below; that issue was not touched this session and is presumably still
+live. Session before that (2026-07-27) covered the theme change, the P&L
+tab, an hours-parsing bug fix, and a broken-deploy fix.
+
+## NEW THIS SESSION — Weekly Report tab, ported from Lauren's separate site (2026-08-08)
+
+Evan's sister Lauren built a separate Next.js site (`wtc-weekly-report`,
+local copy at `OneDrive\Desktop\WTC\Laurens Site\wtc-weekly-report-main`)
+that does sales/employee tracking fed by the studios' Zenoti report
+exports — a different, complementary dataset to this app's existing
+Hours/Sales/Collection-driven tabs. Ported the whole thing in as a new
+"Weekly Report" tab rather than a link to a separate site.
+
+- **New files**: `src/weeklyReport/{constants,fileReader,parsers,compute,store}.js`
+  (logic, ported near-verbatim from her `lib/`) and
+  `src/weeklyReport/WeeklyReportTab.jsx` (~1500 lines — all UI for this
+  feature lives in this one file, matching how the rest of this app keeps
+  each tab's UI in `App.js`). New CSS classes are all prefixed `wr-` at the
+  bottom of `App.css`.
+- **Persistence**: reuses the existing Supabase `periods` table (see
+  `src/db.js`) under one new key, `'weekly_report'`, holding the whole
+  nested data blob as a single JSON payload — same pattern as the existing
+  `'fixed_expenses'` key. No new Supabase table or schema change needed.
+  Her original site used Vercel KV instead; not used here.
+- **Scope**: sales history table (weekly + MTD, by studio or all studios),
+  goal thermometers, month-over-month pacing charts (chart.js bars, not
+  recharts — recharts was never added as a dependency), employee
+  performance tables, pay-period (1st–15th / 16th–EOM) bonus tracking,
+  supply costs, memberships (new/cancelled snapshot tracking), Club Orange
+  collections (billed vs. collected rates), and guest retention — all of
+  it, as one pass rather than phased, per Evan's explicit call. Internal
+  sub-nav inside the tab (Dashboard / Memberships / Collections / Guest
+  Retention / Supply Costs / Upload & Goals) instead of separate pages like
+  her site had. No password gate was added (matches this app's existing
+  no-auth behavior, unlike her site's shared-password login).
+- **Uploads**: seven Zenoti report types (KPI, Attendance, Sales-Accrual,
+  Cerologist Journey Sheet, Memberships export, Memberships Payment
+  export, Guest Retention export) all parse client-side now (originally
+  server-side in her Next.js API routes) via `xlsx` + hand-rolled CSV
+  parsing, same as this app's existing Hours/Sales parsers in `parser.js`.
+- **Known gap — no live browser verification.** No browser automation tool
+  was available on this machine this session either (same gap as last
+  time — no Chrome extension, no Firefox tool, and installing Playwright
+  fresh wasn't attempted since it'd mean downloading a full Chromium
+  binary unprompted). Verified via `npm run build` (`CI=true`, catches
+  ESLint issues too) compiling clean, plus a careful manual line-by-line
+  read of the ported logic against Lauren's originals — but nobody has
+  actually clicked through this in a real browser yet. Do that first
+  before trusting it with real uploads: open the Weekly Report tab, click
+  through all six sub-tabs, try one real Weekly Upload with a real KPI/
+  Attendance/Sales-Accrual/Cerologist file set.
+- **Landmine avoided, not re-triggered**: almost added a
+  `// eslint-disable-next-line react-hooks/exhaustive-deps` comment (the
+  exact thing that broke the build two sessions ago, since that rule name
+  isn't registered under that name in this project's ESLint config).
+  Caught it via `CI=true npm run build` before pushing. Fixed properly
+  instead: `GoalsSection` (in `WeeklyReportTab.jsx`) is split into an
+  outer component holding the studio/month picker and an inner
+  `GoalsForm` keyed by `` `${studio}|${month}` `` so it remounts with
+  fresh lazy-initialized state on picker change, with no effect (and thus
+  no exhaustive-deps question) needed at all.
+- **Not ported**: Lauren's `/seed` page and `/api/seed` route — a
+  one-time migration tool that loaded her own historical spreadsheet data
+  into her site right after its first deploy. Not applicable here; the
+  new tab starts empty like the rest of this app's data did.
 
 ## OPEN ISSUE — Supabase project unreachable, sync broken for everyone but Evan (2026-07-28)
 
