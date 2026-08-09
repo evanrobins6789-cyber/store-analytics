@@ -49,23 +49,6 @@ export function parseLooseDate(text) {
   return `${y}-${m}-${day}`;
 }
 
-// Find the first "From : ... To : ..." style date range anywhere near the top
-function findDateRange(grid) {
-  const re = /from\s*:?\s*(.+?)\s+to\s*:?\s*(.+?)(?:\s{2,}|\s+by\s*:|\s+report\b|$)/i;
-  for (let r = 0; r < Math.min(grid.length, 10); r++) {
-    for (const cell of grid[r]) {
-      const t = cellText(cell);
-      const m = t.match(re);
-      if (m) {
-        const from = m[1].trim();
-        const to = m[2].trim();
-        return { from, to, label: `${from} – ${to}`, fromDate: parseLooseDate(from), toDate: parseLooseDate(to) };
-      }
-    }
-  }
-  return null;
-}
-
 // Find the {row, col} of the first cell whose display text matches a matcher,
 // trying each matcher (in priority order) as a full pass over the whole grid.
 function findHeaderCol(grid, matchers) {
@@ -151,25 +134,15 @@ function readWorkbookGrid(file) {
   });
 }
 
-// ─── Hours / Attendance report ──────────────────────────────────────────────
-// Expected shape: a location name, a "From : ... To : ..." line, then a table
-// of Employee Name | Actual Hours, ending in a "Total:" row. The table has
-// one row per shift worked, not one row per employee — the same name repeats
-// for every day they clocked in during the period, so each employee's rows
-// need to be summed rather than kept as separate entries (the last one
-// would otherwise silently overwrite the rest when periods get merged).
-export async function parseHoursFile(file) {
+// ─── Attendance report (row-level) ──────────────────────────────────────────
+// Expected shape: a "From : ... To : ..." line, then a table of Date |
+// Employee Name | Actual Hours, ending in a "Total:" row. One row per shift
+// worked, not one row per employee — the same name can repeat on the same
+// date (e.g. a manager clocking in/out more than once). Every row is kept as
+// its own entry with its own date; summing per employee happens later, at
+// aggregation time over whatever date range is picked, not here.
+export async function parseAttendanceFile(file) {
   const grid = await readWorkbookGrid(file);
-
-  const dateRange = findDateRange(grid);
-
-  let location = null;
-  for (let r = 0; r < Math.min(grid.length, 3) && !location; r++) {
-    for (const cell of grid[r]) {
-      const t = cellText(cell);
-      if (t && !/from\s*:/i.test(t)) { location = t; break; }
-    }
-  }
 
   const hdr = findHeaderCol(grid, [
     t => t === 'actual hours',
@@ -178,87 +151,80 @@ export async function parseHoursFile(file) {
   ]);
   if (!hdr) throw new Error('Could not find an "Actual Hours" column in this file. Make sure it is an hours/attendance export.');
 
-  const nameCol = 0;
+  const dateCol = 0;
+  const nameCol = 1;
   const hoursCol = hdr.col;
-  const byName = new Map(); // normalized name -> { name, hoursDecimal }
-  let totalFromFooter = null;
+  const rows = [];
 
   for (let r = hdr.row + 1; r < grid.length; r++) {
     const row = grid[r];
     if (!rowHasData(row)) continue;
     const nameText = cellText(row[nameCol]);
+    if (/^(grand\s*)?total\s*:?$/i.test(nameText) || !nameText) continue;
 
-    if (/^(grand\s*)?total\s*:?$/i.test(nameText)) {
-      const parsed = parseHoursCell(row[hoursCol]);
-      if (parsed) totalFromFooter = parsed.decimal;
-      continue;
-    }
-    if (!nameText) continue;
-
-    const parsed = parseHoursCell(row[hoursCol]);
-    if (!parsed) continue;
+    const parsedHours = parseHoursCell(row[hoursCol]);
+    if (!parsedHours) continue;
 
     const cleanName = cleanEmployeeName(nameText);
     if (isExcludedName(cleanName)) continue;
 
-    const key = normalizeEmployeeName(cleanName);
-    const existing = byName.get(key);
-    if (existing) existing.hoursDecimal += parsed.decimal;
-    else byName.set(key, { name: cleanName, hoursDecimal: parsed.decimal });
+    const workDate = parseLooseDate(cellText(row[dateCol]));
+    if (!workDate) continue;
+
+    rows.push({
+      workDate,
+      employeeName: cleanName,
+      hoursDecimal: Math.round(parsedHours.decimal * 100) / 100,
+    });
   }
 
-  const employees = Array.from(byName.values()).map(e => ({
-    name: e.name,
-    hoursDecimal: Math.round(e.hoursDecimal * 100) / 100,
-    hoursDisplay: decimalToHoursDisplay(e.hoursDecimal),
-  }));
+  if (!rows.length) throw new Error('No usable attendance rows found in this file.');
 
-  const totalHoursDecimal = totalFromFooter != null
-    ? Math.round(totalFromFooter * 100) / 100
-    : Math.round(employees.reduce((s, e) => s + e.hoursDecimal, 0) * 100) / 100;
+  const dates = rows.map(r => r.workDate).sort();
 
   return {
-    location,
-    dateRangeLabel: dateRange ? dateRange.label : null,
-    fromDate: dateRange?.fromDate || null,
-    toDate: dateRange?.toDate || null,
-    totalHoursDecimal,
-    totalHoursDisplay: decimalToHoursDisplay(totalHoursDecimal),
-    employees,
     fileName: file.name,
+    fromDate: dates[0],
+    toDate: dates[dates.length - 1],
+    rows,
   };
 }
 
-// ─── Sales / KPI report ─────────────────────────────────────────────────────
-// Expected shape: a wide KPI table, one row per employee, first column is the
-// employee identifier, ending in a "Grand Total" row. We only care about the
-// "Service Revenue" column.
-export async function parseSalesFile(file) {
+// ─── Employee Sales report (row-level) ──────────────────────────────────────
+// Expected shape: a single header row (Employee Name, Sale Center Code, Sale
+// Center, Sale Date, Employee Code, Job, Invoice No, Item Code, Item Type,
+// Item Name, Sale Type, Sales, Sales(Inc. Tax), Split Commission, Employee
+// Sale Value, Commissionable Discount, Payment Type, Status), one row per
+// line item, ending in a "Total:" row. Every closed line item is kept as its
+// own entry with its own date — a service, product, membership, package, or
+// gift card sale all come through as whatever their real Item Type says.
+export async function parseEmployeeSalesFile(file) {
   const grid = await readWorkbookGrid(file);
 
-  const dateRange = findDateRange(grid);
+  let headerRow = -1;
+  for (let r = 0; r < grid.length; r++) {
+    const texts = grid[r].map(c => cellText(c).toLowerCase());
+    if (texts.includes('employee name') && texts.includes('sale date')) { headerRow = r; break; }
+  }
+  if (headerRow === -1) throw new Error('Could not find the header row (Employee Name / Sale Date) in this file. Make sure it is an Employee Sales export.');
 
-  const hdr = findHeaderCol(grid, [
-    t => t === 'service revenue',
-    t => t.includes('service') && t.includes('revenue') && !t.includes('average') && !t.includes('invoice') && !t.includes('collection'),
-  ]);
-  if (!hdr) throw new Error('Could not find a "Service Revenue" column in this file. Make sure it is a sales/KPI export.');
+  const colIndex = {};
+  grid[headerRow].forEach((cell, c) => { colIndex[cellText(cell).toLowerCase()] = c; });
 
-  // Retail sales = "Product Revenue" in the KPI export. Optional — if the
-  // report doesn't have it, retail sales are just treated as 0 everywhere.
-  const retailHdr = findHeaderCol(grid, [
-    t => t === 'product revenue',
-    t => t.includes('product') && t.includes('revenue') && !t.includes('average') && !t.includes('invoice'),
-  ]);
-
-  const nameCol = 0;
-  const revCol = hdr.col;
-  const retailCol = retailHdr ? retailHdr.col : null;
-  const employees = [];
-  let otherRevenue = 0;
-  let otherRetailSales = 0;
-  let grandTotal = null;
-  let grandTotalRetail = null;
+  const need = (name) => {
+    if (!(name in colIndex)) throw new Error(`Could not find a "${name}" column in this file. Make sure it is an Employee Sales export.`);
+    return colIndex[name];
+  };
+  const nameCol = need('employee name');
+  const saleDateCol = need('sale date');
+  const saleCenterCol = colIndex['sale center'];
+  const invoiceCol = colIndex['invoice no'];
+  const itemCodeCol = colIndex['item code'];
+  const itemTypeCol = need('item type');
+  const itemNameCol = colIndex['item name'];
+  const salesCol = need('sales');
+  const paymentTypeCol = colIndex['payment type'];
+  const statusCol = colIndex['status'];
 
   const numAt = (row, col) => {
     if (col == null) return 0;
@@ -266,44 +232,45 @@ export async function parseSalesFile(file) {
     return typeof raw === 'number' ? raw : (parseFloat(String(raw).replace(/[$,]/g, '')) || 0);
   };
 
-  for (let r = hdr.row + 1; r < grid.length; r++) {
+  const rows = [];
+  for (let r = headerRow + 1; r < grid.length; r++) {
     const row = grid[r];
     if (!rowHasData(row)) continue;
     const nameText = cellText(row[nameCol]);
+    if (/^(grand\s*)?total\s*:?$/i.test(nameText) || !nameText) continue;
 
-    const rev = numAt(row, revCol);
-    const retail = numAt(row, retailCol);
-
-    if (/^grand\s*total\s*:?$/i.test(nameText)) { grandTotal = rev; grandTotalRetail = retail; continue; }
+    const status = statusCol != null ? cellText(row[statusCol]) : 'Closed';
+    if (status && status.toLowerCase() !== 'closed') continue;
 
     const cleanName = cleanEmployeeName(nameText);
-    if (!cleanName || isExcludedName(cleanName)) { otherRevenue += rev; otherRetailSales += retail; continue; }
+    if (isExcludedName(cleanName)) continue;
 
-    employees.push({
-      name: cleanName,
-      serviceRevenue: Math.round(rev * 100) / 100,
-      retailSales: Math.round(retail * 100) / 100,
+    const saleDate = parseLooseDate(cellText(row[saleDateCol]));
+    if (!saleDate) continue;
+
+    rows.push({
+      saleDate,
+      employeeName: cleanName,
+      storeName: saleCenterCol != null ? matchStoreName(cellText(row[saleCenterCol])) : null,
+      invoiceNo: invoiceCol != null ? cellText(row[invoiceCol]) : null,
+      itemCode: itemCodeCol != null ? cellText(row[itemCodeCol]) : null,
+      itemType: cellText(row[itemTypeCol]),
+      itemName: itemNameCol != null ? cellText(row[itemNameCol]) : null,
+      saleAmount: Math.round(numAt(row, salesCol) * 100) / 100,
+      paymentType: paymentTypeCol != null ? cellText(row[paymentTypeCol]) : null,
+      status: status || 'Closed',
     });
   }
 
-  const totalServiceRevenue = grandTotal != null
-    ? Math.round(grandTotal * 100) / 100
-    : Math.round((employees.reduce((s, e) => s + e.serviceRevenue, 0) + otherRevenue) * 100) / 100;
+  if (!rows.length) throw new Error('No usable sales rows found in this file.');
 
-  const totalRetailSales = grandTotalRetail != null
-    ? Math.round(grandTotalRetail * 100) / 100
-    : Math.round((employees.reduce((s, e) => s + e.retailSales, 0) + otherRetailSales) * 100) / 100;
+  const dates = rows.map(r => r.saleDate).sort();
 
   return {
-    dateRangeLabel: dateRange ? dateRange.label : null,
-    fromDate: dateRange?.fromDate || null,
-    toDate: dateRange?.toDate || null,
-    totalServiceRevenue,
-    totalRetailSales,
-    otherRevenue: Math.round(otherRevenue * 100) / 100,
-    otherRetailSales: Math.round(otherRetailSales * 100) / 100,
-    employees,
     fileName: file.name,
+    fromDate: dates[0],
+    toDate: dates[dates.length - 1],
+    rows,
   };
 }
 
@@ -326,8 +293,8 @@ const COLLECTION_CATEGORIES = [
 
 export { COLLECTION_CATEGORIES };
 
-function matchCollectionStoreName(label) {
-  const l = label.toLowerCase();
+function matchStoreName(label) {
+  const l = String(label || '').toLowerCase();
   if (l.includes('concord')) return 'CONCORD';
   if (l.includes('pike creek')) return 'PIKE CREEK';
   if (l.includes('media')) return 'MEDIA';
@@ -370,7 +337,7 @@ export async function parseStoreCollectionFile(file) {
 
     if (/^grand\s*total$/i.test(label)) { grandTotal = readEntry(row); continue; }
 
-    const storeName = matchCollectionStoreName(label);
+    const storeName = matchStoreName(label);
     if (storeName) stores[storeName] = readEntry(row);
   }
 

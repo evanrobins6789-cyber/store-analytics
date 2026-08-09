@@ -1,20 +1,114 @@
 # Handoff — Waxing The City Analytics ("Employee Performance")
 
-Last updated: 2026-08-08 (fifth touch that day) — **STILL BROKEN, pick this
-up first next time.** The compare-range fix (fourth touch, below) did not
-resolve it — user re-tested and reports uploads still don't populate the
-main page. Out of time to keep debugging this session; see "STILL OPEN —
-uploads still not populating after the compare-range fix" right below for
-the strongest untested hypothesis and exactly how to check it. Earlier the
-same day: replaced the whole Period 1/2 upload model with date-driven
-report periods and a free-form comparison picker (supersedes "automatic
-period history" from earlier still — user asked to drop Period 1/2 slots
-entirely once that landed). Before that: added the new "Weekly Report" tab
-plus a visual pass (removed the balance-scale icon, bigger data fonts).
-Session before (2026-07-28) diagnosed — but did not fix — the
-shared-data-not-syncing bug documented in the still-open issue further
-below; still live. Session before that (2026-07-27) covered the theme
-change, the P&L tab, an hours-parsing bug fix, and a broken-deploy fix.
+Last updated: 2026-08-09 — **Rebuilt around Attendance + Employee Sales,
+row-level, permanent history.** This replaces the whole `report_periods`
+model (and its still-open "uploads don't populate the main page" bug from
+2026-08-08, see below) with something structurally different: every
+Attendance/Employee Sales row carries its own date, so instead of
+period objects matched by date range, every row is now stored permanently
+and every tab just filters/sums whatever's in the picked date range
+directly. Requested by the user specifically to scrap the period-blob
+approach; see "REBUILT — row-level Attendance + Employee Sales" below for
+the full design. The 2026-08-08 entries below are kept for context but are
+now superseded — the bug they describe can't recur because the thing that
+caused it (period-matching by parsed header dates) no longer exists.
+
+## REBUILT — row-level Attendance + Employee Sales, permanent history (2026-08-09)
+
+The user wants to upload real reports going forward and have the dataset
+just keep growing forever, rather than re-uploading into period slots.
+Verified against two real files (`Attendance(47).xlsx`, `Employee
+Sales(5).xlsx`) that both have a date on *every line*, not just a report
+header — so the whole "match this upload to a period by its parsed
+from/to date" design (the source of the 2026-08-08 bug) is gone; there are
+no periods anymore, just two ever-growing tables filtered by whatever
+range the CompareBar picker is set to.
+
+- **New Supabase tables** (row-level, NOT part of the existing generic
+  `periods` JSON-blob table — a growing dataset like this would mean
+  re-uploading everything on every single upload if it lived in one
+  blob): `attendance_entries` (work_date, employee_name, hours_decimal)
+  and `sales_entries` (sale_date, employee_name, store_name, invoice_no,
+  item_code, item_type, item_name, sale_amount, payment_type, status).
+  **The user needs to run the SQL for these once** — it's in the Setup
+  tab under "One-time database setup," same pattern as the original
+  `periods` table SQL. Until that's run, uploads will silently fall back
+  to local-only storage with a toast error (same fallback behavior
+  `periods` already had).
+- **`src/parser.js`**: `parseHoursFile`/`parseSalesFile` (old KPI-style,
+  collapsed to one row per employee) replaced by `parseAttendanceFile`/
+  `parseEmployeeSalesFile` — both return one entry per raw line, with its
+  own date, no collapsing. Fixes the old per-shift-overwrite risk for
+  free (nothing collapses employees by name at parse time anymore).
+  `fromDate`/`toDate` on the parsed result are computed from the actual
+  row dates (min/max), not the report's header text — sidesteps the
+  entire class of bug the old `parseLooseDate`-in-period-matching had,
+  since row dates ("8/1/2026") are trivially parseable and every row has
+  one. Verified against both real files with an actual Jest+jsdom test
+  (parser.js needs a browser `FileReader`, so a plain Node script can't
+  exercise the real exported functions) — Employee Sales' 123 rows summed
+  to $4,187.50, matching the file's own footer exactly. Attendance summed
+  to 370:56 across 53 rows; the file's footer says 404:20 across 66 raw
+  rows, but 13 of those are the excluded manager ("Ciana (mgr) Santiago")
+  — same `isExcludedName` filter the app has always applied, confirmed by
+  counting her rows independently. Not a bug, just took a wrong first
+  guess at the test assertion to notice.
+- **`src/db.js`**: added `loadAttendanceEntries`/`loadSalesEntries`
+  (select all, ordered by date) and `replaceAttendanceRange`/
+  `replaceSalesRange` (delete rows in `[fromDate, toDate]` computed from
+  the upload's own rows, then insert the new ones) — a re-upload of a
+  week you already loaded corrects it in place instead of duplicating,
+  with no fragile per-row unique key needed (Employee Sales can
+  legitimately have two identical-looking line items in one invoice).
+  Local-storage fallback mirrors the same semantics under
+  `wtc_attendance_entries_v1`/`wtc_sales_entries_v1`.
+- **`src/App.js`**: the display components (Overview, Employee
+  Performance, By Store, P&L's statement layout, `LedgerTable`,
+  `CompareBar`, etc.) are **unchanged** — they all consumed one shared
+  "merged period" shape before and still do now; only the data-plumbing
+  underneath was replaced. `aggregateAttendance`/`aggregateSales` (new)
+  filter the raw row arrays by picked date range and sum per employee;
+  `mergePeriod` (kept, same logic) combines those into the shape the UI
+  already expected. Default comparison range on load: most recent 7 days
+  present in the data vs. the 7 days before that (replaces "two most
+  recent periods").
+- **P&L unchanged in spirit**: per explicit user decision, P&L still gets
+  its Income from a separate Store Collection Summary upload (not derived
+  from Employee Sales) — that upload isn't historical, it's a single
+  "current snapshot" now stored under the `periods` table's
+  `collections_current` key (previously lived awkwardly inside whichever
+  `report_periods` entry was "most recently touched").
+- **History tab → Upload Log tab**: there's no more "period" to browse —
+  data is continuous now. The tab instead lists every Attendance/Employee
+  Sales upload ever made (file name, date range, row count, when), so you
+  can check "did I already load the week of Aug 1?" before re-running an
+  export. Browsing actual numbers by date now happens via the
+  `CompareBar` picker on every other tab, which works over however wide a
+  range you want (no more "spans more than one uploaded period" concern —
+  there's no period to span).
+- **Old `report_periods` data**: left alone in Supabase, not migrated
+  (explicit user decision — there's no way to reconstruct row-level facts
+  from already-rolled-up weekly totals). The new tabs don't read it. If
+  historical weeks matter going forward, re-upload their Attendance/
+  Employee Sales files if still available.
+- **Accepted simplification**: the old "house / unattributed sales"
+  footnote on the Employees tab is gone — excluded names (managers,
+  house-sale rows, anything matching `pos`) are now dropped entirely at
+  parse time rather than tallied into a running total.
+- **Known gap — no live browser verification**, same as every session on
+  this machine (no Chrome extension, no Firefox automation tool). Verified
+  via `CI=true npm run build` (compiles clean) and an actual Jest+jsdom
+  test exercising the real parser functions against both real sample
+  files (see above) — but nobody has clicked through the real UI with
+  these changes yet. **Before trusting it with next week's real upload**:
+  open the app, upload a real Attendance file and a real Employee Sales
+  file, confirm Overview/Employee Performance/By Store populate and the
+  numbers look right, check the Upload Log tab shows the upload, then
+  re-upload the *same* file and confirm it corrects in place rather than
+  duplicating (row count in Upload Log should show a new entry but the
+  totals shouldn't double).
+
+---
 
 ## STILL OPEN — uploads still not populating after the compare-range fix (2026-08-08, fifth touch)
 

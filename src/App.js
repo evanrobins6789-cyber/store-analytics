@@ -4,8 +4,12 @@ import {
   Chart as ChartJS,
   CategoryScale, LinearScale, BarElement, Tooltip, Legend
 } from 'chart.js';
-import { loadPeriods, savePeriod, isConfigured } from './db';
-import { parseHoursFile, parseSalesFile, parseStoreCollectionFile, normalizeEmployeeName, decimalToHoursDisplay, parseLooseDate, COLLECTION_CATEGORIES } from './parser';
+import {
+  loadPeriods, savePeriod, isConfigured,
+  loadAttendanceEntries, loadSalesEntries, replaceAttendanceRange, replaceSalesRange,
+  deleteAllAttendance, deleteAllSales,
+} from './db';
+import { parseAttendanceFile, parseEmployeeSalesFile, parseStoreCollectionFile, normalizeEmployeeName, decimalToHoursDisplay, COLLECTION_CATEGORIES } from './parser';
 import { STORE_ROSTER } from './storeRoster';
 import { getHourlyRate, totalPay } from './hourlyRates';
 import WeeklyReportTab from './weeklyReport/WeeklyReportTab';
@@ -29,9 +33,10 @@ function Badge({ curr, prev }) {
   return <span className={`badge ${up ? 'badge-up' : 'badge-dn'}`}>{up ? '+' : ''}{pct}%</span>;
 }
 
-// ─── Report periods: every upload files itself into a period by its own ────
-// ─── date range — no manual "Period 1 / Period 2" slots to manage ──────────
-function newPeriodId() {
+// ─── Row-level data: every Attendance/Employee Sales row carries its own ───
+// ─── date, so "a period" is just whatever range is picked — no period ──────
+// ─── objects, no matching, no combining multiple uploads by hand ───────────
+function newId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
@@ -45,131 +50,6 @@ function rangeLabel(range) {
   return `${fmtDateShort(range.from)} – ${fmtDateShort(range.to)}`;
 }
 
-function periodDisplayLabel(entry) {
-  if (entry.label) return entry.label;
-  if (entry.fromDate && entry.toDate) return `${fmtDateShort(entry.fromDate)} – ${fmtDateShort(entry.toDate)}`;
-  return 'Untitled period';
-}
-
-// One-time migration for accounts that still have data under the old
-// period1/period2 (+ period_history) keys from before periods were keyed by
-// date range — folds them into the new unified list so nothing uploaded
-// before this change goes missing.
-function migrateLegacyToReportPeriods(saved) {
-  const list = [];
-  const addSnapshot = snap => {
-    if (!snap || (!snap.hours && !snap.sales && !snap.collections)) return;
-    const label = snap.label || snap.hours?.dateRangeLabel || snap.sales?.dateRangeLabel || '';
-    const [fromText, toText] = label.split(' – ');
-    list.push({
-      id: newPeriodId(),
-      label,
-      fromDate: snap.hours?.fromDate || snap.sales?.fromDate || parseLooseDate(fromText) || null,
-      toDate: snap.hours?.toDate || snap.sales?.toDate || parseLooseDate(toText) || null,
-      hours: snap.hours || null,
-      sales: snap.sales || null,
-      collections: snap.collections || null,
-      updatedAt: new Date().toISOString(),
-    });
-  };
-  addSnapshot(saved.period1);
-  addSnapshot(saved.period2);
-  (saved.period_history || []).forEach(addSnapshot);
-  return list;
-}
-
-// Every report period whose date range overlaps [from, to] — ISO YYYY-MM-DD
-// strings compare correctly with plain string comparison.
-function periodsOverlappingRange(reportPeriods, range) {
-  if (!range?.from || !range?.to) return [];
-  return reportPeriods.filter(p => p.fromDate && p.toDate && p.fromDate <= range.to && p.toDate >= range.from);
-}
-
-// Sum multiple periods' hours/sales/collections into one combined dataset —
-// lets a picked date range span more than one uploaded report (e.g. a full
-// month made of two semi-monthly pay periods) while reusing mergePeriod and
-// every downstream display component unchanged.
-function combineHours(periods) {
-  const list = periods.map(p => p.hours).filter(Boolean);
-  if (!list.length) return null;
-  const byName = new Map();
-  list.forEach(h => (h.employees || []).forEach(e => {
-    const key = normalizeEmployeeName(e.name);
-    const cur = byName.get(key) || { name: e.name, hoursDecimal: 0 };
-    cur.hoursDecimal += e.hoursDecimal || 0;
-    byName.set(key, cur);
-  }));
-  const employees = Array.from(byName.values()).map(e => ({
-    name: e.name,
-    hoursDecimal: Math.round(e.hoursDecimal * 100) / 100,
-    hoursDisplay: decimalToHoursDisplay(e.hoursDecimal),
-  }));
-  const totalHoursDecimal = Math.round(list.reduce((s, h) => s + (h.totalHoursDecimal || 0), 0) * 100) / 100;
-  return {
-    location: [...new Set(list.map(h => h.location).filter(Boolean))].join(', ') || null,
-    totalHoursDecimal,
-    totalHoursDisplay: decimalToHoursDisplay(totalHoursDecimal),
-    employees,
-  };
-}
-
-function combineSales(periods) {
-  const list = periods.map(p => p.sales).filter(Boolean);
-  if (!list.length) return null;
-  const byName = new Map();
-  let otherRevenue = 0, otherRetailSales = 0;
-  list.forEach(s => {
-    otherRevenue += s.otherRevenue || 0;
-    otherRetailSales += s.otherRetailSales || 0;
-    (s.employees || []).forEach(e => {
-      const key = normalizeEmployeeName(e.name);
-      const cur = byName.get(key) || { name: e.name, serviceRevenue: 0, retailSales: 0 };
-      cur.serviceRevenue += e.serviceRevenue || 0;
-      cur.retailSales += e.retailSales || 0;
-      byName.set(key, cur);
-    });
-  });
-  const employees = Array.from(byName.values()).map(e => ({
-    name: e.name,
-    serviceRevenue: Math.round(e.serviceRevenue * 100) / 100,
-    retailSales: Math.round(e.retailSales * 100) / 100,
-  }));
-  return {
-    totalServiceRevenue: Math.round(list.reduce((s, x) => s + (x.totalServiceRevenue || 0), 0) * 100) / 100,
-    totalRetailSales: Math.round(list.reduce((s, x) => s + (x.totalRetailSales || 0), 0) * 100) / 100,
-    otherRevenue: Math.round(otherRevenue * 100) / 100,
-    otherRetailSales: Math.round(otherRetailSales * 100) / 100,
-    employees,
-  };
-}
-
-function combineCollections(periods) {
-  const list = periods.map(p => p.collections).filter(Boolean);
-  if (!list.length) return null;
-  const emptyCategoryTotals = () => Object.fromEntries(COLLECTION_CATEGORIES.map(c => [c.key, 0]));
-  const stores = {};
-  const grandTotal = { totalCollection: 0, ...emptyCategoryTotals() };
-  list.forEach(c => {
-    Object.entries(c.stores || {}).forEach(([storeName, entry]) => {
-      const cur = stores[storeName] || { totalCollection: 0, ...emptyCategoryTotals() };
-      cur.totalCollection += entry.totalCollection || 0;
-      COLLECTION_CATEGORIES.forEach(cc => { cur[cc.key] += entry[cc.key] || 0; });
-      stores[storeName] = cur;
-    });
-    grandTotal.totalCollection += c.grandTotal?.totalCollection || 0;
-    COLLECTION_CATEGORIES.forEach(cc => { grandTotal[cc.key] += c.grandTotal?.[cc.key] || 0; });
-  });
-  return { stores, grandTotal };
-}
-
-// Default comparison: the two most recent distinct periods, so the app
-// isn't blank on first load.
-function computeDefaultRange(reportPeriods) {
-  const dated = reportPeriods.filter(p => p.fromDate && p.toDate).sort((a, b) => b.fromDate.localeCompare(a.fromDate));
-  const toRange = p => (p ? { from: p.fromDate, to: p.toDate } : { from: '', to: '' });
-  return { a: toRange(dated[1]), b: toRange(dated[0]) };
-}
-
 function toISODate(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -177,7 +57,65 @@ function toISODate(d) {
   return `${y}-${m}-${day}`;
 }
 
-// ─── Merge one period's hours + sales into a single comparable dataset ─────
+// Sum raw attendance rows in [from, to] per employee.
+function aggregateAttendance(rows, from, to) {
+  if (!from || !to) return null;
+  const byName = new Map();
+  rows.filter(r => r.workDate >= from && r.workDate <= to).forEach(r => {
+    const key = normalizeEmployeeName(r.employeeName);
+    const cur = byName.get(key) || { name: r.employeeName, hoursDecimal: 0 };
+    cur.hoursDecimal += r.hoursDecimal;
+    byName.set(key, cur);
+  });
+  const employees = Array.from(byName.values()).map(e => ({
+    name: e.name,
+    hoursDecimal: Math.round(e.hoursDecimal * 100) / 100,
+    hoursDisplay: decimalToHoursDisplay(e.hoursDecimal),
+  }));
+  const totalHoursDecimal = Math.round(employees.reduce((s, e) => s + e.hoursDecimal, 0) * 100) / 100;
+  return { totalHoursDecimal, totalHoursDisplay: decimalToHoursDisplay(totalHoursDecimal), employees };
+}
+
+// Sum raw sales rows in [from, to] per employee. Every non-Service item type
+// (Product, Membership, Package, Gift Card, ...) rolls into "retail sales",
+// matching the old app's two-bucket Service vs. Product split.
+function aggregateSales(rows, from, to) {
+  if (!from || !to) return null;
+  const byName = new Map();
+  rows.filter(r => r.saleDate >= from && r.saleDate <= to).forEach(r => {
+    const key = normalizeEmployeeName(r.employeeName);
+    const cur = byName.get(key) || { name: r.employeeName, serviceRevenue: 0, retailSales: 0 };
+    if (r.itemType === 'Service') cur.serviceRevenue += r.saleAmount;
+    else cur.retailSales += r.saleAmount;
+    byName.set(key, cur);
+  });
+  const employees = Array.from(byName.values()).map(e => ({
+    name: e.name,
+    serviceRevenue: Math.round(e.serviceRevenue * 100) / 100,
+    retailSales: Math.round(e.retailSales * 100) / 100,
+  }));
+  return {
+    totalServiceRevenue: Math.round(employees.reduce((s, e) => s + e.serviceRevenue, 0) * 100) / 100,
+    totalRetailSales: Math.round(employees.reduce((s, e) => s + e.retailSales, 0) * 100) / 100,
+    employees,
+  };
+}
+
+// Default comparison on first load: the most recent 7 days present in either
+// dataset, vs. the 7 days before that.
+function computeDefaultCompareRange(attendanceRows, salesRows) {
+  const allDates = [...attendanceRows.map(r => r.workDate), ...salesRows.map(r => r.saleDate)].sort();
+  const empty = { a: { from: '', to: '' }, b: { from: '', to: '' } };
+  if (!allDates.length) return empty;
+  const bTo = new Date(allDates[allDates.length - 1] + 'T00:00:00');
+  const bFrom = new Date(bTo); bFrom.setDate(bFrom.getDate() - 6);
+  const aTo = new Date(bFrom); aTo.setDate(aTo.getDate() - 1);
+  const aFrom = new Date(aTo); aFrom.setDate(aFrom.getDate() - 6);
+  return { a: { from: toISODate(aFrom), to: toISODate(aTo) }, b: { from: toISODate(bFrom), to: toISODate(bTo) } };
+}
+
+// ─── Merge one range's attendance + sales aggregates into a single ────────
+// ─── comparable dataset ─────────────────────────────────────────────────────
 function mergePeriod(hours, sales) {
   if (!hours && !sales) return null;
   const map = new Map();
@@ -223,7 +161,6 @@ function mergePeriod(hours, sales) {
   const payrollPct = totalSalesAll > 0 ? totalPayroll / totalSalesAll : null;
 
   return {
-    location: hours?.location || null,
     totalHours,
     totalHoursDisplay: hours?.totalHoursDisplay || null,
     totalRevenue,
@@ -232,13 +169,12 @@ function mergePeriod(hours, sales) {
     totalRevPerHour,
     totalPayroll,
     payrollPct,
-    otherRevenue: sales?.otherRevenue || 0,
     employees,
     hoursOnly,
     salesOnly,
-    hasHours: !!hours,
-    hasSales: !!sales,
-    complete: !!hours && !!sales,
+    hasHours: !!(hours && hours.employees.length),
+    hasSales: !!(sales && sales.employees.length),
+    complete: !!(hours && hours.employees.length) && !!(sales && sales.employees.length),
   };
 }
 
@@ -375,41 +311,40 @@ function UploadSlot({ inputId, title, hint, accent, fileInfo, uploading, onFile 
   );
 }
 
-// The most recently updated period that has a file of this kind — used only
-// to show "here's what's currently loaded" feedback in the upload box.
-function mostRecentOfKind(reportPeriods, kind) {
-  const withKind = reportPeriods.filter(p => p[kind]);
-  if (!withKind.length) return null;
-  return withKind.reduce((latest, p) => ((p.updatedAt || '') > (latest.updatedAt || '') ? p : latest))[kind];
+// The most recent upload-log entry of a given kind — used only to show
+// "here's what's currently loaded" feedback in the upload box. uploadLog is
+// stored newest-first.
+function mostRecentLogEntry(uploadLog, kind) {
+  return uploadLog.find(e => e.kind === kind) || null;
 }
 
-function UploadPanel({ reportPeriods, uploadingKind, onFile }) {
-  const hours = mostRecentOfKind(reportPeriods, 'hours');
-  const sales = mostRecentOfKind(reportPeriods, 'sales');
-  const collections = mostRecentOfKind(reportPeriods, 'collections');
+function UploadPanel({ uploadLog, collectionsSnapshot, uploadingKind, onFile }) {
+  const attendance = mostRecentLogEntry(uploadLog, 'attendance');
+  const sales = mostRecentLogEntry(uploadLog, 'sales');
+  const hasCollections = collectionsSnapshot && Object.keys(collectionsSnapshot.stores || {}).length > 0;
   return (
     <div className="period-panel">
       <div className="period-panel-head">
         <span className="period-eyebrow">Upload a report</span>
-        <p className="upload-panel-hint">Each file's own date range files it into the right period automatically — upload as many as you want, over time, without losing anything.</p>
+        <p className="upload-panel-hint">Every row already has its own date, so uploads are permanent — upload as many weeks as you want, over time, and the dataset just keeps growing. Re-uploading a week you already loaded corrects it in place instead of duplicating.</p>
       </div>
       <div className="period-slots">
         <UploadSlot
-          inputId="upload-hours"
-          title="Hours worked"
+          inputId="upload-attendance"
+          title="Attendance"
           hint="Upload the attendance / hours export"
           accent="steel"
-          uploading={uploadingKind === 'hours'}
-          fileInfo={hours ? { fileName: hours.fileName, sub: `${hours.employees.length} employees · ${hours.totalHoursDisplay} total` } : null}
-          onFile={file => onFile('hours', file)}
+          uploading={uploadingKind === 'attendance'}
+          fileInfo={attendance ? { fileName: attendance.fileName, sub: `${attendance.rowCount} rows · ${fmtDateShort(attendance.fromDate)} – ${fmtDateShort(attendance.toDate)}` } : null}
+          onFile={file => onFile('attendance', file)}
         />
         <UploadSlot
           inputId="upload-sales"
-          title="Service sales"
-          hint="Upload the sales / KPI export"
+          title="Employee Sales"
+          hint="Upload the employee sales export"
           accent="sage"
           uploading={uploadingKind === 'sales'}
-          fileInfo={sales ? { fileName: sales.fileName, sub: `${sales.employees.length} employees · ${fmt$(sales.totalServiceRevenue)} total` } : null}
+          fileInfo={sales ? { fileName: sales.fileName, sub: `${sales.rowCount} rows · ${fmtDateShort(sales.fromDate)} – ${fmtDateShort(sales.toDate)}` } : null}
           onFile={file => onFile('sales', file)}
         />
         <UploadSlot
@@ -418,7 +353,7 @@ function UploadPanel({ reportPeriods, uploadingKind, onFile }) {
           hint="Upload the store-level KPI/collection export"
           accent="brass"
           uploading={uploadingKind === 'collections'}
-          fileInfo={collections ? { fileName: collections.fileName, sub: `${Object.keys(collections.stores).length} stores · ${fmt$(collections.grandTotal?.totalCollection)} total collection` } : null}
+          fileInfo={hasCollections ? { fileName: collectionsSnapshot.fileName, sub: `${Object.keys(collectionsSnapshot.stores).length} stores · ${fmt$(collectionsSnapshot.grandTotal?.totalCollection)} total collection` } : null}
           onFile={file => onFile('collections', file)}
         />
       </div>
@@ -742,12 +677,6 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
 
       <LedgerTable rows={sorted} label1={label1} label2={label2} />
 
-      {(p1?.otherRevenue > 0 || p2?.otherRevenue > 0) && (
-        <p className="ledger-footnote">
-          House / unattributed sales not tied to a specific employee — {label1}: {fmt$(p1?.otherRevenue || 0)}, {label2}: {fmt$(p2?.otherRevenue || 0)}.
-        </p>
-      )}
-
       {unmatched.length > 0 && (
         <div className="unmatched-box">
           <p className="unmatched-title">⚠ {unmatched.length} name{unmatched.length > 1 ? 's' : ''} excluded — missing hours or sales data</p>
@@ -968,16 +897,16 @@ function PLTab({ merged, collections, fixedExpenses, onSaveFixedExpenses }) {
 }
 
 // ─── Setup tab ──────────────────────────────────────────────────────────────
-function SetupTab({ configured, reportPeriods, uploadingKind, onFile }) {
+function SetupTab({ configured, uploadLog, collectionsSnapshot, uploadingKind, onFile }) {
   const steps = [
-    { n: 1, title: 'Export your hours report', body: 'From your scheduling/POS system, run the attendance (hours) report for whatever date range you want to look at.' },
-    { n: 2, title: 'Export your sales report', body: 'Run the service-sales (KPI) report for the same date range. The Service Revenue column is the one this app reads.' },
-    { n: 3, title: 'Export your store collection summary', body: 'For the P&L tab, run the store-level KPI/collection export (one row per store, with a Total Collection column) for the same date range.' },
-    { n: 4, title: 'Upload the three files below', body: 'Tap + on each box: Hours, Sales, and Collection Summary. Each file already has its own date range printed on it, so the app files it into the right period automatically — upload hours and sales first, then collections. No "Period 1" or "Period 2" to pick.' },
+    { n: 1, title: 'Export your Attendance report', body: 'From your scheduling/POS system, run the Attendance report for whatever date range you want to add (a week at a time is typical). It needs a Date, Employee Name, and Actual Hours column.' },
+    { n: 2, title: 'Export your Employee Sales report', body: 'Run the Employee Sales report for the same date range — the line-item export with a Sale Date, Item Type, and Sales column per transaction, not a rolled-up KPI summary.' },
+    { n: 3, title: 'Export your store collection summary', body: 'For the P&L tab only, run the store-level KPI/collection export (one row per store, with a Total Collection column). This one isn\'t historical — each upload just replaces the current snapshot P&L reads from.' },
+    { n: 4, title: 'Upload the files below', body: 'Tap + on Attendance and Employee Sales any time you have a new date range to add — every row already has its own date, so there\'s nothing to match up manually. Uploading the same date range again corrects those rows in place instead of duplicating them.' },
     { n: 5, title: 'Employees are grouped by store automatically', body: 'The "By Store" tab groups this same comparison by location. The employee → store list is built into the app — no upload needed for it.' },
-    { n: 6, title: 'Pick what to compare', body: 'Overview, Employee Performance, By Store, and P&L all share one date-range picker at the top: type in exactly the two ranges you want (A vs B), or tap "This month vs last month" for a quick MTD comparison. If a picked range spans more than one uploaded report, they\'re summed together automatically.' },
+    { n: 6, title: 'Pick what to compare', body: 'Overview, Employee Performance, By Store, and P&L all share one date-range picker at the top: type in exactly the two ranges you want (A vs B), or tap "This month vs last month" for a quick MTD comparison — the picker just filters whatever has been uploaded so far, spanning as many weeks as it needs to.' },
     { n: 7, title: 'Read the comparison', body: 'Employee Performance and By Store break down each side by Actual Hours, Service Rev, Retail Sales, Total Sales, Pay + Tax + Retail (hourly pay + 10% retail commission + 8% payroll tax), Production (what they made minus what they cost), two TSTH columns (service-only and total-sales), and Payroll % (pay ÷ total sales). Averages for both TSTH columns and Payroll % show at the bottom of each table. Only employees with both an hours record and a sales record for a period are included.' },
-    { n: 8, title: 'Nothing is ever lost', body: 'Every report you upload becomes its own permanent period, filed by date — re-uploading the same date range just corrects it in place. Look back on any past period any time under the History tab.' },
+    { n: 8, title: 'Nothing is ever lost', body: 'Every Attendance/Employee Sales row you\'ve ever uploaded stays in the dataset permanently — the app just keeps growing week over week. Check the Upload Log tab any time to see what\'s been loaded so far.' },
     { n: 9, title: 'Add to your phone home screen', body: 'On iPhone: open the app URL in Safari → Share → "Add to Home Screen." On Android: Chrome → three dots → "Add to Home Screen."' },
   ];
   return (
@@ -988,7 +917,7 @@ function SetupTab({ configured, reportPeriods, uploadingKind, onFile }) {
           : '⚠ Supabase not connected — data is only saved on this device. See below to enable cross-device sync.'}
       </div>
 
-      <UploadPanel reportPeriods={reportPeriods} uploadingKind={uploadingKind} onFile={onFile} />
+      <UploadPanel uploadLog={uploadLog} collectionsSnapshot={collectionsSnapshot} uploadingKind={uploadingKind} onFile={onFile} />
 
       <div className="setup-section">
         {steps.map(s => (
@@ -998,6 +927,45 @@ function SetupTab({ configured, reportPeriods, uploadingKind, onFile }) {
           </div>
         ))}
       </div>
+
+      <div className="setup-sql-card">
+        <p className="chart-title">One-time database setup — Attendance &amp; Employee Sales tables</p>
+        <p className="step-body">This app now stores Attendance and Employee Sales as permanent, row-level data instead of weekly snapshots, so it needs two dedicated tables. Run this once in the Supabase SQL Editor (safe to run again if you're not sure it already ran — <code>create table</code> will just error harmlessly if the tables exist):</p>
+        <pre className="setup-sql">{`create table attendance_entries (
+  id bigint generated always as identity primary key,
+  work_date date not null,
+  employee_name text not null,
+  hours_decimal numeric not null,
+  source_file text,
+  uploaded_at timestamptz not null default now()
+);
+create index attendance_entries_date_idx on attendance_entries (work_date);
+
+create table sales_entries (
+  id bigint generated always as identity primary key,
+  sale_date date not null,
+  employee_name text not null,
+  store_name text,
+  invoice_no text,
+  item_code text,
+  item_type text not null,
+  item_name text,
+  sale_amount numeric not null,
+  payment_type text,
+  status text,
+  source_file text,
+  uploaded_at timestamptz not null default now()
+);
+create index sales_entries_date_idx on sales_entries (sale_date);
+
+alter table attendance_entries enable row level security;
+alter table sales_entries enable row level security;
+
+create policy "Allow all access" on attendance_entries for all using (true) with check (true);
+create policy "Allow all access" on sales_entries for all using (true) with check (true);`}</pre>
+        <p className="step-body">Same "Allow all access" policy as the existing <code>periods</code> table — without it, Supabase silently blocks every request and uploads will only save on this device. If Attendance/Employee Sales uploads seem to disappear after a refresh, this is the first thing to check.</p>
+      </div>
+
       {!configured && (
         <div className="setup-sql-card">
           <p className="chart-title">One-time Supabase setup</p>
@@ -1022,132 +990,77 @@ create policy "Allow all access"
   );
 }
 
-// ─── History tab ────────────────────────────────────────────────────────────
-// Every report period ever uploaded lives here permanently, newest first —
-// this is the same list the comparison tabs draw from, just browsable in
-// full rather than filtered down to two picked ranges.
-function HistoryEntryCard({ entry }) {
-  const [expanded, setExpanded] = useState(false);
-  const merged = useMemo(() => mergePeriod(entry.hours, entry.sales), [entry]);
-  const collectionsTotal = entry.collections?.grandTotal?.totalCollection;
-  const updatedDate = entry.updatedAt ? new Date(entry.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : null;
-
-  return (
-    <div className="summary-card history-card">
-      <div className="history-card-head">
-        <div>
-          <p className="period-name">{periodDisplayLabel(entry)}</p>
-          {updatedDate && <p className="history-archived-at">Last updated {updatedDate}</p>}
-        </div>
-        {merged?.employees?.length > 0 && (
-          <button className="btn-ghost btn-sm" onClick={() => setExpanded(x => !x)}>
-            {expanded ? 'Hide' : 'Show'} employees
-          </button>
-        )}
-      </div>
-
-      {merged ? (
-        <>
-          <div className="summary-row">
-            <span className="summary-label">Hours worked</span>
-            <span className="summary-value">{merged.totalHoursDisplay || '—'}</span>
-          </div>
-          <div className="summary-row">
-            <span className="summary-label">Service revenue</span>
-            <span className="summary-value">{merged.totalRevenue != null ? fmt$(merged.totalRevenue) : '—'}</span>
-          </div>
-          <div className="summary-row summary-row--highlight">
-            <span className="summary-label">TSTH</span>
-            <span className="summary-value">{fmtRate(merged.totalRevPerHour)}</span>
-          </div>
-          <div className="summary-row">
-            <span className="summary-label">Total payroll</span>
-            <span className="summary-value">{merged.totalPayroll != null ? fmt$(merged.totalPayroll) : '—'}</span>
-          </div>
-          {collectionsTotal != null && (
-            <div className="summary-row">
-              <span className="summary-label">Store collections</span>
-              <span className="summary-value">{fmt$(collectionsTotal)}</span>
-            </div>
-          )}
-        </>
-      ) : (
-        <p className="empty-note">No hours/sales data in this snapshot</p>
-      )}
-
-      {expanded && merged?.employees?.length > 0 && (
-        <div className="ledger-scroll history-emp-scroll">
-          <table className="ledger-table">
-            <thead>
-              <tr><th className="ledger-name-col">Employee</th><th>Hours</th><th>Service Rev</th><th>Retail Sales</th><th>TSTH</th></tr>
-            </thead>
-            <tbody>
-              {merged.employees.map(e => (
-                <tr key={e.name}>
-                  <td className="ledger-name-col">{e.name}</td>
-                  <td>{e.hoursDisplay || '—'}</td>
-                  <td>{fmt$(e.serviceRevenue)}</td>
-                  <td>{fmt$(e.retailSales)}</td>
-                  <td className="ledger-rate">{fmtRate(e.revPerHour)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function HistoryTab({ reportPeriods }) {
-  const sorted = useMemo(
-    () => [...reportPeriods].sort((a, b) => (b.fromDate || b.updatedAt || '').localeCompare(a.fromDate || a.updatedAt || '')),
-    [reportPeriods]
-  );
-  if (!sorted.length) {
+// ─── Upload Log tab ─────────────────────────────────────────────────────────
+// Every Attendance/Employee Sales upload, permanently, newest first — a
+// quick way to check whether a given week has already been loaded before
+// running the export again. Data itself isn't browsed here (it's continuous
+// now, not a set of discrete periods) — that happens via the date-range
+// picker on every other tab.
+function UploadLogTab({ uploadLog }) {
+  if (!uploadLog.length) {
     return (
       <div className="tab-content">
         <div className="empty-state">
-          <p className="empty-title">No reports uploaded yet</p>
-          <p>Every report you upload shows up here automatically, filed by its own date range — nothing you upload is ever overwritten or lost.</p>
+          <p className="empty-title">No uploads yet</p>
+          <p>Every Attendance or Employee Sales file you upload shows up here automatically, permanently.</p>
         </div>
       </div>
     );
   }
   return (
     <div className="tab-content">
-      <p className="section-label">Every period ever uploaded, newest first.</p>
-      <div className="history-list">
-        {sorted.map(entry => <HistoryEntryCard key={entry.id} entry={entry} />)}
+      <p className="section-label">Every upload, newest first.</p>
+      <div className="ledger-scroll">
+        <table className="ledger-table">
+          <thead>
+            <tr><th>Uploaded</th><th>Report</th><th>File</th><th>Date range</th><th>Rows</th></tr>
+          </thead>
+          <tbody>
+            {uploadLog.map(entry => (
+              <tr key={entry.id}>
+                <td>{new Date(entry.uploadedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</td>
+                <td>{entry.kind === 'attendance' ? 'Attendance' : 'Employee Sales'}</td>
+                <td className="ledger-name-col">{entry.fileName}</td>
+                <td>{fmtDateShort(entry.fromDate)} – {fmtDateShort(entry.toDate)}</td>
+                <td>{entry.rowCount}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 }
 
 // ─── App ────────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Employee Performance', 'By Store', 'P&L', 'Weekly Report', 'History', 'Setup'];
+const TABS = ['Overview', 'Employee Performance', 'By Store', 'P&L', 'Weekly Report', 'Upload Log', 'Setup'];
 const COMPARE_TABS = ['Overview', 'Employee Performance', 'By Store', 'P&L'];
 const emptyRange = { a: { from: '', to: '' }, b: { from: '', to: '' } };
+const emptyCollections = { stores: {}, grandTotal: null };
 
 export default function App() {
-  const [reportPeriods, setReportPeriods] = useState([]);
+  const [attendanceRows, setAttendanceRows] = useState([]);
+  const [salesRows, setSalesRows] = useState([]);
+  const [collectionsSnapshot, setCollectionsSnapshot] = useState(emptyCollections);
+  const [uploadLog, setUploadLog] = useState([]);
   const [compareRange, setCompareRange] = useState(emptyRange);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('Overview');
   const [toast, setToast] = useState(null);
-  const [uploadingKind, setUploadingKind] = useState(null); // 'hours'|'sales'|'collections'|null
+  const [uploadingKind, setUploadingKind] = useState(null); // 'attendance'|'sales'|'collections'|null
   const [fixedExpenses, setFixedExpenses] = useState({}); // { [storeName]: { rent, utilities, ... } }
   const [weeklyReportData, setWeeklyReportData] = useState(emptyWeeklyReportData());
 
   useEffect(() => {
-    loadPeriods().then(({ data: saved, source, error }) => {
-      let list = saved.report_periods;
-      if (!list) {
-        list = migrateLegacyToReportPeriods(saved);
-        if (list.length) savePeriod('report_periods', list);
-      }
-      setReportPeriods(list);
-      setCompareRange(computeDefaultRange(list));
+    Promise.all([loadAttendanceEntries(), loadSalesEntries(), loadPeriods()]).then(([att, sal, periodsRes]) => {
+      setAttendanceRows(att.data);
+      setSalesRows(sal.data);
+      setCompareRange(computeDefaultCompareRange(att.data, sal.data));
+
+      const saved = periodsRes.data;
+      setCollectionsSnapshot(saved.collections_current || emptyCollections);
+      setUploadLog(saved.upload_log || []);
+
       // Seed any store that has no saved fixed expenses yet with the real
       // numbers from the March 2026 Contribution Report — once a store is
       // saved (even unchanged), its own values take over from here on.
@@ -1161,8 +1074,10 @@ export default function App() {
       if (seeded) savePeriod('fixed_expenses', withDefaults);
       setWeeklyReportData({ ...emptyWeeklyReportData(), ...(saved[WEEKLY_REPORT_KEY] || {}) });
       setLoading(false);
-      if (isConfigured() && source === 'local') {
-        showToast(`Couldn't reach Supabase (${error || 'unknown error'}) — showing this device's local data only`, 'error');
+
+      const failed = [att, sal, periodsRes].find(r => r.source === 'local' && r.error);
+      if (isConfigured() && failed) {
+        showToast(`Couldn't reach Supabase (${failed.error}) — showing this device's local data only`, 'error');
       }
     }).catch(() => setLoading(false));
   }, []);
@@ -1172,68 +1087,57 @@ export default function App() {
     setTimeout(() => setToast(null), 3500);
   };
 
+  const appendUploadLog = useCallback((kind, parsed) => {
+    setUploadLog(prev => {
+      const next = [{
+        id: newId(), kind, fileName: parsed.fileName,
+        fromDate: parsed.fromDate, toDate: parsed.toDate, rowCount: parsed.rows.length,
+        uploadedAt: new Date().toISOString(),
+      }, ...prev];
+      savePeriod('upload_log', next);
+      return next;
+    });
+  }, []);
+
   const handleFile = useCallback(async (kind, file) => {
     setUploadingKind(kind);
     try {
-      const parsed = kind === 'hours' ? await parseHoursFile(file)
-        : kind === 'sales' ? await parseSalesFile(file)
-        : await parseStoreCollectionFile(file);
-
-      // Hours/sales files carry their own date range — match against an
-      // existing period with the same range (a correction) or start a new
-      // one. Collection-summary files have no date range of their own, so
-      // they file under whichever period was most recently touched.
-      let matchIdx = -1;
-      if (parsed.fromDate && parsed.toDate) {
-        matchIdx = reportPeriods.findIndex(p => p.fromDate === parsed.fromDate && p.toDate === parsed.toDate);
-      } else if (parsed.dateRangeLabel) {
-        matchIdx = reportPeriods.findIndex(p => p.label === parsed.dateRangeLabel);
-      } else if (kind === 'collections') {
-        matchIdx = reportPeriods.reduce((bestIdx, p, i) => (p.fromDate && (bestIdx === -1 || p.fromDate > reportPeriods[bestIdx].fromDate)) ? i : bestIdx, -1);
-      }
-
-      const now = new Date().toISOString();
-      let next;
-      if (matchIdx >= 0) {
-        next = reportPeriods.map((p, i) => i === matchIdx
-          ? { ...p, [kind]: parsed, label: p.label || parsed.dateRangeLabel || '', updatedAt: now }
-          : p);
+      if (kind === 'attendance') {
+        const parsed = await parseAttendanceFile(file);
+        const result = await replaceAttendanceRange(parsed.fromDate, parsed.toDate, parsed.rows, file.name);
+        setAttendanceRows(prev => [...prev.filter(r => r.workDate < parsed.fromDate || r.workDate > parsed.toDate), ...parsed.rows]);
+        appendUploadLog('attendance', parsed);
+        if (isConfigured() && !result.ok) {
+          showToast(`Loaded ${file.name}, but couldn't sync to Supabase (${result.error}) — only visible on this device`, 'error');
+        } else {
+          showToast(`Loaded ${file.name} — ${parsed.rows.length} rows, ${fmtDateShort(parsed.fromDate)} – ${fmtDateShort(parsed.toDate)}`);
+        }
+      } else if (kind === 'sales') {
+        const parsed = await parseEmployeeSalesFile(file);
+        const result = await replaceSalesRange(parsed.fromDate, parsed.toDate, parsed.rows, file.name);
+        setSalesRows(prev => [...prev.filter(r => r.saleDate < parsed.fromDate || r.saleDate > parsed.toDate), ...parsed.rows]);
+        appendUploadLog('sales', parsed);
+        if (isConfigured() && !result.ok) {
+          showToast(`Loaded ${file.name}, but couldn't sync to Supabase (${result.error}) — only visible on this device`, 'error');
+        } else {
+          showToast(`Loaded ${file.name} — ${parsed.rows.length} rows, ${fmtDateShort(parsed.fromDate)} – ${fmtDateShort(parsed.toDate)}`);
+        }
       } else {
-        next = [...reportPeriods, {
-          id: newPeriodId(),
-          label: parsed.dateRangeLabel || (kind === 'collections' ? 'Collections upload' : 'Untitled period'),
-          fromDate: parsed.fromDate || null,
-          toDate: parsed.toDate || null,
-          hours: null, sales: null, collections: null,
-          [kind]: parsed,
-          updatedAt: now,
-        }];
-      }
-
-      setReportPeriods(next);
-      // If neither side of the compare picker points at real data yet (the
-      // very first upload, or right after "Delete all data"), fill it in
-      // from what's now available so the comparison tabs actually populate
-      // instead of sitting on empty date pickers until the user notices.
-      setCompareRange(prev => {
-        const untouched = !prev.a.from && !prev.a.to && !prev.b.from && !prev.b.to;
-        return untouched ? computeDefaultRange(next) : prev;
-      });
-      const result = await savePeriod('report_periods', next);
-      const desc = kind === 'collections'
-        ? `${Object.keys(parsed.stores).length} stores found`
-        : `${parsed.employees.length} employees found`;
-      if (isConfigured() && !result.ok) {
-        showToast(`Loaded ${file.name}, but couldn't sync to Supabase (${result.error}) — only visible on this device`, 'error');
-      } else {
-        showToast(matchIdx >= 0 ? `Loaded ${file.name} — ${desc}` : `New period added — ${desc}`);
+        const parsed = await parseStoreCollectionFile(file);
+        setCollectionsSnapshot(parsed);
+        const result = await savePeriod('collections_current', parsed);
+        if (isConfigured() && !result.ok) {
+          showToast(`Loaded ${file.name}, but couldn't sync to Supabase (${result.error}) — only visible on this device`, 'error');
+        } else {
+          showToast(`Loaded ${file.name} — ${Object.keys(parsed.stores).length} stores found`);
+        }
       }
     } catch (err) {
       showToast(err.message, 'error');
     } finally {
       setUploadingKind(null);
     }
-  }, [reportPeriods]);
+  }, [appendUploadLog]);
 
   const handleRangeChange = useCallback((side, field, value) => {
     setCompareRange(prev => ({ ...prev, [side]: { ...prev[side], [field]: value } }));
@@ -1252,10 +1156,16 @@ export default function App() {
   }, []);
 
   const handleClearAll = async () => {
-    if (!window.confirm('Permanently delete every uploaded report and period? This cannot be undone.')) return;
-    setReportPeriods([]);
+    if (!window.confirm('Permanently delete every uploaded Attendance/Employee Sales row, the P&L collection snapshot, and the upload log? This cannot be undone.')) return;
+    setAttendanceRows([]);
+    setSalesRows([]);
+    setCollectionsSnapshot(emptyCollections);
+    setUploadLog([]);
     setCompareRange(emptyRange);
-    await savePeriod('report_periods', []);
+    await Promise.all([
+      deleteAllAttendance(), deleteAllSales(),
+      savePeriod('collections_current', emptyCollections), savePeriod('upload_log', []),
+    ]);
     showToast('All uploaded data deleted');
   };
 
@@ -1270,14 +1180,28 @@ export default function App() {
     }
   }, [fixedExpenses]);
 
-  const periodsA = useMemo(() => periodsOverlappingRange(reportPeriods, compareRange.a), [reportPeriods, compareRange.a]);
-  const periodsB = useMemo(() => periodsOverlappingRange(reportPeriods, compareRange.b), [reportPeriods, compareRange.b]);
-  const mergedA = useMemo(() => mergePeriod(combineHours(periodsA), combineSales(periodsA)), [periodsA]);
-  const mergedB = useMemo(() => mergePeriod(combineHours(periodsB), combineSales(periodsB)), [periodsB]);
-  const collectionsB = useMemo(() => combineCollections(periodsB), [periodsB]);
+  const hoursA = useMemo(() => {
+    const a = aggregateAttendance(attendanceRows, compareRange.a.from, compareRange.a.to);
+    return a && a.employees.length ? a : null;
+  }, [attendanceRows, compareRange.a]);
+  const salesA = useMemo(() => {
+    const s = aggregateSales(salesRows, compareRange.a.from, compareRange.a.to);
+    return s && s.employees.length ? s : null;
+  }, [salesRows, compareRange.a]);
+  const hoursB = useMemo(() => {
+    const a = aggregateAttendance(attendanceRows, compareRange.b.from, compareRange.b.to);
+    return a && a.employees.length ? a : null;
+  }, [attendanceRows, compareRange.b]);
+  const salesB = useMemo(() => {
+    const s = aggregateSales(salesRows, compareRange.b.from, compareRange.b.to);
+    return s && s.employees.length ? s : null;
+  }, [salesRows, compareRange.b]);
+
+  const mergedA = useMemo(() => mergePeriod(hoursA, salesA), [hoursA, salesA]);
+  const mergedB = useMemo(() => mergePeriod(hoursB, salesB), [hoursB, salesB]);
   const labelA = rangeLabel(compareRange.a);
   const labelB = rangeLabel(compareRange.b);
-  const hasAnyData = reportPeriods.length > 0;
+  const hasAnyData = attendanceRows.length > 0 || salesRows.length > 0;
 
   if (loading) return <div className="app-loading"><div className="spinner large" /></div>;
 
@@ -1288,9 +1212,7 @@ export default function App() {
       <header className="app-header">
         <div className="header-left">
           <h1 className="app-title">Employee Performance</h1>
-          <p className="app-subtitle">
-            {mergedA?.location || mergedB?.location || 'Labor hours vs. service sales, side by side'}
-          </p>
+          <p className="app-subtitle">Labor hours vs. service sales, side by side</p>
         </div>
         <div className="header-right">
           {hasAnyData && <button className="btn-ghost" onClick={handleClearAll}>Delete all data</button>}
@@ -1311,18 +1233,18 @@ export default function App() {
         {tab === 'By Store' && <ByStoreTab p1={mergedA} p2={mergedB} label1={labelA} label2={labelB} />}
         {tab === 'P&L' && (
           <PLTab
-            merged={mergedB} collections={collectionsB}
+            merged={mergedB} collections={collectionsSnapshot}
             fixedExpenses={fixedExpenses} onSaveFixedExpenses={handleSaveFixedExpenses}
           />
         )}
         {tab === 'Weekly Report' && (
           <WeeklyReportTab data={weeklyReportData} onChange={setWeeklyReportData} showToast={showToast} />
         )}
-        {tab === 'History' && <HistoryTab reportPeriods={reportPeriods} />}
+        {tab === 'Upload Log' && <UploadLogTab uploadLog={uploadLog} />}
         {tab === 'Setup' && (
           <SetupTab
-            configured={isConfigured()} reportPeriods={reportPeriods} uploadingKind={uploadingKind}
-            onFile={handleFile}
+            configured={isConfigured()} uploadLog={uploadLog} collectionsSnapshot={collectionsSnapshot}
+            uploadingKind={uploadingKind} onFile={handleFile}
           />
         )}
       </main>
