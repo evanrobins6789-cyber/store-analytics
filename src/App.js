@@ -189,7 +189,6 @@ const FIXED_EXPENSE_FIELDS = [
   { key: 'accounting', label: 'Accounting' },
   { key: 'bankFees', label: 'Bank Fees' },
   { key: 'infoSystems', label: 'Information Systems' },
-  { key: 'royalties', label: 'Royalties' },
   { key: 'supplies', label: 'Supplies' },
   { key: 'advertising', label: 'Advertising' },
   { key: 'maintenance', label: 'Maintenance' },
@@ -229,6 +228,14 @@ function storeIncome(collections, storeName) {
   return { values, total };
 }
 
+// Franchise royalty: always exactly 6% of Total Collection (income), never a
+// manually-entered/editable amount — recomputed live from whatever
+// collections were actually uploaded so it can't drift or go stale.
+const ROYALTY_RATE = 0.06;
+function storeRoyalties(income) {
+  return income * ROYALTY_RATE;
+}
+
 // storeName === null sums that one category across every store (used for
 // the combined statement); otherwise it's just that store's saved value.
 function fixedExpenseCategoryValue(fixedExpenses, storeName, key) {
@@ -249,17 +256,17 @@ function fixedExpenseTotal(fixedExpenses, storeName) {
 const DEFAULT_FIXED_EXPENSES = {
   CONCORD: {
     rent: 5336.66, utilities: 847.4, insurance: 309.89, licenses: 0, alarmMonitoring: 0,
-    accounting: 0, bankFees: 156.36, infoSystems: 799, royalties: 500.39, supplies: 210.4,
+    accounting: 0, bankFees: 156.36, infoSystems: 799, supplies: 210.4,
     advertising: 2606.61, maintenance: 0, paidouts: 28.24, refunds: 0,
   },
   MEDIA: {
     rent: 6038.33, utilities: 848, insurance: 309.89, licenses: 0, alarmMonitoring: 0,
-    accounting: 0, bankFees: 373.93, infoSystems: 846.94, royalties: 1152.47, supplies: 1324.82,
+    accounting: 0, bankFees: 373.93, infoSystems: 846.94, supplies: 1324.82,
     advertising: 3062.82, maintenance: 55, paidouts: 90, refunds: 0,
   },
   'PIKE CREEK': {
     rent: 5895.71, utilities: 1079.45, insurance: 309.89, licenses: 0, alarmMonitoring: 0,
-    accounting: 0, bankFees: 496.04, infoSystems: 799, royalties: 1421.22, supplies: 1470.49,
+    accounting: 0, bankFees: 496.04, infoSystems: 799, supplies: 1470.49,
     advertising: 3056.87, maintenance: 55, paidouts: 154.84, refunds: 0,
   },
 };
@@ -738,9 +745,10 @@ function ByStoreTab({ p1, p2, label1, label2 }) {
 // Current period only (no prior-period comparison) — income comes from the
 // store collection summary report's Total Collection (broken into the
 // categories that sum to it). Compensation is computed live from the same
-// Hours + Sales files used elsewhere in the app. Fixed costs (rent, tech
-// fees, bank fees, royalties, etc.) don't come from any report — they're
-// entered once per store below and reused every time until you change them.
+// Hours + Sales files used elsewhere in the app. Royalties are always a flat
+// 6% of income (see storeRoyalties), never manually entered. Other fixed
+// costs (rent, tech fees, bank fees, etc.) don't come from any report —
+// they're entered once per store below and reused every time until changed.
 function PLSummaryCard({ income, payroll, fixed }) {
   const net = income - payroll - fixed;
   const margin = income > 0 ? net / income : null;
@@ -784,11 +792,12 @@ function StatementRow({ label, value, pctBase, bold }) {
 }
 
 function PLStatement({ incomeValues, income, payroll, fixedExpenses, storeName }) {
+  const royalties = storeRoyalties(income);
   const fixedRows = FIXED_EXPENSE_FIELDS.map(f => ({
     label: f.label,
     value: fixedExpenseCategoryValue(fixedExpenses, storeName, f.key),
   }));
-  const fixedTotal = fixedRows.reduce((sum, r) => sum + r.value, 0);
+  const fixedTotal = fixedRows.reduce((sum, r) => sum + r.value, 0) + royalties;
   const totalExpense = payroll + fixedTotal;
   const netIncome = income - totalExpense;
 
@@ -805,6 +814,7 @@ function PLStatement({ incomeValues, income, payroll, fixedExpenses, storeName }
 
         <p className="pl-section-title">Expense</p>
         <StatementRow label="Compensation" value={payroll} pctBase={income} />
+        <StatementRow label="Royalties (6% of Collections)" value={royalties} pctBase={income} />
         <p className="pl-section-title">Fixed expenses</p>
         {fixedRows.map(r => <StatementRow key={r.label} label={r.label} value={r.value} pctBase={income} />)}
         <StatementRow label="Total Expense" value={totalExpense} pctBase={income} bold />
@@ -857,7 +867,7 @@ function FixedExpensesForm({ storeName, values, onSave }) {
 function StorePLSection({ storeName, merged, collections, fixedExpenses, onSaveFixedExpenses }) {
   const inc = storeIncome(collections, storeName);
   const payroll = storePayroll(merged, storeName);
-  const fixed = fixedExpenseTotal(fixedExpenses, storeName);
+  const fixed = fixedExpenseTotal(fixedExpenses, storeName) + storeRoyalties(inc.total);
 
   return (
     <section className="pl-store-section">
