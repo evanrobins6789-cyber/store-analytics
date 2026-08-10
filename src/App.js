@@ -1147,13 +1147,21 @@ export default function App() {
     const today = new Date();
     const y = today.getFullYear(), m = today.getMonth();
     const bFrom = toISODate(new Date(y, m, 1));
-    const bTo = toISODate(today);
+    // Cap "to" at the latest date that actually has uploaded data, not at
+    // today's calendar date — otherwise a gap between the last upload and
+    // today (e.g. data through the 7th but it's the 10th) reads as a real
+    // dip instead of just missing data.
+    const allDates = [...attendanceRows.map(r => r.workDate), ...salesRows.map(r => r.saleDate)].sort();
+    const latestDataDate = allDates.length ? allDates[allDates.length - 1] : null;
+    const todayISO = toISODate(today);
+    const bTo = (latestDataDate && latestDataDate >= bFrom) ? latestDataDate : todayISO;
+    const bToDay = Number(bTo.slice(8, 10));
     const py = m === 0 ? y - 1 : y, pm = m === 0 ? 11 : m - 1;
     const daysInPrevMonth = new Date(py, pm + 1, 0).getDate();
     const aFrom = toISODate(new Date(py, pm, 1));
-    const aTo = toISODate(new Date(py, pm, Math.min(today.getDate(), daysInPrevMonth)));
+    const aTo = toISODate(new Date(py, pm, Math.min(bToDay, daysInPrevMonth)));
     setCompareRange({ a: { from: aFrom, to: aTo }, b: { from: bFrom, to: bTo } });
-  }, []);
+  }, [attendanceRows, salesRows]);
 
   const handleClearAll = async () => {
     if (!window.confirm('Permanently delete every uploaded Attendance/Employee Sales row, the P&L collection snapshot, and the upload log? This cannot be undone.')) return;
