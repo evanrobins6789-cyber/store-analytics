@@ -1,13 +1,45 @@
 # Handoff — Waxing The City Analytics ("Employee Performance")
 
-Last updated: 2026-08-10 — **Fixed "This month vs last month" showing a
-false dip when uploads lag behind today's date.** See "Fix — This month
-vs last month capped at today instead of latest upload" right below.
-Also this session: ported Lauren's live Weekly Report data into this
-app's `weekly_report` Supabase slot (see the entry below that one). Still
-pending from earlier today: "DEPLOY SNAG — new tables returned 401,
-missing GRANTs" — not yet confirmed fixed by the user, check that first
-if attendance/sales uploads are being worked on.
+Last updated: 2026-08-10 — **Royalties on the P&L tab are now always a
+flat 6% of collections, computed live, no longer manually entered.** See
+"P&L — Royalties now a flat 6% of collections" right below. Still pending
+from earlier today: "DEPLOY SNAG — new tables returned 401, missing
+GRANTs" — not yet confirmed fixed by the user, check that first if
+attendance/sales uploads are being worked on.
+
+## P&L — Royalties now a flat 6% of collections, not manually entered (2026-08-10)
+
+User asked: Royalties on the P&L tab should always be a flat 6% of
+collections, never changing (i.e. not a number someone types in and
+forgets to update).
+
+**Change**, `App.js`: `royalties` removed from `FIXED_EXPENSE_FIELDS` (so
+it's gone from the per-store `FixedExpensesForm` edit grid and no longer
+persisted as a manually-entered dollar amount) and from
+`DEFAULT_FIXED_EXPENSES`'s three seeded stores. New helper
+`storeRoyalties(income)` returns `income * ROYALTY_RATE` (`ROYALTY_RATE =
+0.06`), called wherever a P&L total is assembled: `StorePLSection`'s
+`fixed` total (feeds `PLSummaryCard`) and `PLStatement` (own `royalties`
+line item, shown between Compensation and the Fixed expenses section,
+folded into `fixedTotal`/`totalExpense`/`netIncome`). Income is always the
+store's Total Collection for the period being shown (`storeIncome`), so
+this is 6% of whatever was actually uploaded — same behavior for a single
+store and for "All Stores Combined" (which just sums each store's own 6%,
+since `storeIncome(null)` uses the report's own Grand Total row).
+
+Old per-store `royalties` dollar figures already saved in Supabase's
+`fixed_expenses` key are now just unread/orphaned data — harmless, not
+cleaned up, since `fixedExpenseCategoryValue`/`fixedExpenseTotal` only
+ever iterate `FIXED_EXPENSE_FIELDS`.
+
+Verified via `CI=true npm run build` only (compiles clean) plus a
+one-line arithmetic sanity check (`10000 * 0.06 === 600`) — **not yet
+clicked through in a real browser**, same standing gap as everything else
+in this app. Pushed straight to `main` per this repo's standing
+preference. Before trusting it: open the P&L tab for a store with real
+uploaded collections data and confirm the "Royalties (6% of Collections)"
+line matches 6% of that store's Total Collection, and that it's no longer
+editable in the fixed-expenses form below.
 
 ## Fix — This month vs last month capped at today instead of latest upload (2026-08-10)
 
