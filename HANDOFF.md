@@ -1,10 +1,65 @@
 # Handoff — Waxing The City Analytics ("Employee Performance")
 
-Last updated: 2026-08-10 — **Deploying the 2026-08-09 rebuild hit a real
-Supabase permissions snag, diagnosed and a fix given — not yet confirmed
-fixed, check this first.** See "DEPLOY SNAG — new tables returned 401,
-missing GRANTs" right below. No code changed this session, this was pure
-live troubleshooting after the rebuild's first real-world deploy.
+Last updated: 2026-08-10 — **Ported Lauren's live Weekly Report data
+(wtc-weekly-report-phi.vercel.app) into this app's `weekly_report`
+Supabase slot, one-for-one.** See "Weekly Report data ported from
+Lauren's live site" right below. Also still pending from earlier today:
+"DEPLOY SNAG — new tables returned 401, missing GRANTs" — not yet
+confirmed fixed by the user, check that first if attendance/sales
+uploads are being worked on.
+
+## Weekly Report data ported from Lauren's live site (2026-08-10)
+
+The user asked to port the real data from Lauren's separately-hosted
+`wtc-weekly-report` site (https://wtc-weekly-report-phi.vercel.app,
+password-gated) into this app's Weekly Report tab — that tab's *code* was
+ported on 2026-08-08, but it had never been fed real data, since it's a
+brand-new tab reading from an empty `weekly_report` Supabase key.
+
+No browser automation is available on this machine (same known gap as
+always), so a live click-through wasn't possible or needed here — instead,
+read Lauren's still-local site source
+(`OneDrive\Desktop\WTC\Laurens Site\wtc-weekly-report-main`) to find that
+her whole app is gated by one `wtc_session` cookie
+(`middleware.js`/`app/api/login/route.js`) and that `GET /api/data`
+(`app/api/data/route.js` → `lib/store.js`) returns her **entire** dataset
+as a single JSON blob straight from Vercel KV — studios, employees,
+supserv, memberships, guestRetention, collections, goals, meta. That
+shape is an exact match (superset of two extra fields, `meta` and
+`memberships.currentRecords`, both unused by this app's ported code but
+harmless as extra JSON) for `emptyWeeklyReportData()` in
+`src/weeklyReport/store.js`.
+
+**Mechanics**: `curl` POST to her `/api/login` with the password the user
+provided, capturing the `wtc_session` cookie; `curl` GET to `/api/data`
+with that cookie to pull the full blob (258KB — 5 weeks of history per
+studio, 265 collections records, membership/guest-retention history,
+2026-07/08 goals). Checked this app's own `weekly_report` key first via
+the Supabase REST API (empty — safe to write, no existing data at risk),
+then upserted the blob into the `periods` table (`period_id:
+'weekly_report'`) via a direct `POST .../rest/v1/periods?on_conflict=
+period_id` call, using the project's publishable/anon key (user pasted
+URL `https://ffbcjofwfjwuldpvarbi.supabase.co` + the `sb_publishable_...`
+key from Supabase dashboard → Settings → API — same key already baked
+into this app's build, not a new credential). Re-fetched afterward to
+confirm the row landed with all expected keys and array lengths intact.
+
+**Not done / still open**:
+- **No live browser verification that the tab renders this data
+  correctly** — same standing gap as every UI session on this machine.
+  Before trusting it: open the Weekly Report tab, click through all six
+  sub-tabs (Dashboard/Memberships/Collections/Guest Retention/Supply
+  Costs/Upload & Goals) and confirm real numbers show up, not just that
+  the write succeeded.
+- This was a **one-time snapshot copy**, not an ongoing sync — Lauren's
+  site and this app now have two independent copies of this data as of
+  2026-08-10. If Lauren's site keeps getting new weekly uploads, this
+  app's copy will drift stale unless someone repeats this port or the
+  user starts uploading weekly reports directly into this app's Weekly
+  Report tab going forward instead of hers.
+- Didn't touch `attendance_entries`/`sales_entries` (the DEPLOY SNAG
+  tables below) — this was purely the `weekly_report` JSON blob, a
+  separate feature/table from that Attendance+Sales rebuild.
 
 ## DEPLOY SNAG — new tables returned 401, missing GRANTs (2026-08-10)
 
