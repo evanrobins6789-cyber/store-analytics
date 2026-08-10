@@ -1,17 +1,53 @@
 # Handoff — Waxing The City Analytics ("Employee Performance")
 
-Last updated: 2026-08-09 — **Rebuilt around Attendance + Employee Sales,
-row-level, permanent history.** This replaces the whole `report_periods`
-model (and its still-open "uploads don't populate the main page" bug from
-2026-08-08, see below) with something structurally different: every
-Attendance/Employee Sales row carries its own date, so instead of
-period objects matched by date range, every row is now stored permanently
-and every tab just filters/sums whatever's in the picked date range
-directly. Requested by the user specifically to scrap the period-blob
-approach; see "REBUILT — row-level Attendance + Employee Sales" below for
-the full design. The 2026-08-08 entries below are kept for context but are
-now superseded — the bug they describe can't recur because the thing that
-caused it (period-matching by parsed header dates) no longer exists.
+Last updated: 2026-08-10 — **Deploying the 2026-08-09 rebuild hit a real
+Supabase permissions snag, diagnosed and a fix given — not yet confirmed
+fixed, check this first.** See "DEPLOY SNAG — new tables returned 401,
+missing GRANTs" right below. No code changed this session, this was pure
+live troubleshooting after the rebuild's first real-world deploy.
+
+## DEPLOY SNAG — new tables returned 401, missing GRANTs (2026-08-10)
+
+After running the `attendance_entries`/`sales_entries` SQL from the
+2026-08-09 rebuild (below) and confirming via `pg_tables`/`pg_policies`
+that both tables and their "Allow all access" RLS policies existed, the
+app was still showing "Couldn't reach Supabase (Could not find the table
+'public.attendance_entries' in the schema cache)". Talked through several
+wrong hypotheses first (stale PostgREST cache, wrong Supabase project) —
+ruled both out via `NOTIFY pgrst, 'reload schema'` and confirming the
+Vercel Storage-integration SQL Editor is guaranteed to be the same project
+the app uses.
+
+**Actual cause, found via the browser's Network tab (Firefox dev tools —
+first real live-browser check this app has gotten in weeks):**
+`attendance_entries`/`sales_entries` requests returned **401**, while the
+existing `periods` table on the same connection returned **200**. Tables
+created by hand through the Supabase SQL Editor don't automatically get
+`GRANT`ed to the `anon`/`authenticated` roles the way tables created
+through Supabase's Table Editor UI do — an RLS policy alone isn't enough,
+Postgres checks table-level `GRANT` first. `periods` must have gotten its
+grants some other way (created earlier, possibly via a different path) —
+these two new tables didn't.
+
+**Fix given** (not yet confirmed by the user as of this writing — check
+this first next session before assuming it's fixed):
+```sql
+grant select, insert, update, delete on public.attendance_entries to anon, authenticated;
+grant select, insert, update, delete on public.sales_entries to anon, authenticated;
+grant usage, select on all sequences in schema public to anon, authenticated;
+```
+
+**Follow-up not yet done**: the Setup tab's in-app SQL snippet (and the
+copy of it in the section below) still doesn't include these `GRANT`
+lines — anyone who ever needs to recreate these tables from scratch by
+following that snippet will hit this exact same 401. Should add the
+`grant` statements there too; flagged but not done this session since the
+user only asked for this handoff update, not a code change.
+
+**Once confirmed fixed**, the real end-to-end test from the 2026-08-09
+entry below (upload a real Attendance + Employee Sales file, confirm the
+tabs populate, re-upload the same file and confirm it corrects instead of
+duplicating) is still outstanding and should happen next.
 
 ## REBUILT — row-level Attendance + Employee Sales, permanent history (2026-08-09)
 
