@@ -1,12 +1,41 @@
 # Handoff — Waxing The City Analytics ("Employee Performance")
 
-Last updated: 2026-08-10 — **Ported Lauren's live Weekly Report data
-(wtc-weekly-report-phi.vercel.app) into this app's `weekly_report`
-Supabase slot, one-for-one.** See "Weekly Report data ported from
-Lauren's live site" right below. Also still pending from earlier today:
-"DEPLOY SNAG — new tables returned 401, missing GRANTs" — not yet
-confirmed fixed by the user, check that first if attendance/sales
-uploads are being worked on.
+Last updated: 2026-08-10 — **Fixed "This month vs last month" showing a
+false dip when uploads lag behind today's date.** See "Fix — This month
+vs last month capped at today instead of latest upload" right below.
+Also this session: ported Lauren's live Weekly Report data into this
+app's `weekly_report` Supabase slot (see the entry below that one). Still
+pending from earlier today: "DEPLOY SNAG — new tables returned 401,
+missing GRANTs" — not yet confirmed fixed by the user, check that first
+if attendance/sales uploads are being worked on.
+
+## Fix — This month vs last month capped at today instead of latest upload (2026-08-10)
+
+User reported: clicking "This month vs last month" (the CompareBar
+shortcut) always set range B's `to` date to literally today, even when
+the most recent Attendance/Employee Sales upload only covers data through
+an earlier date (e.g. uploads current through Aug 7, clicked the button
+on Aug 10). Since `aggregateAttendance`/`aggregateSales` just filter rows
+by date range and sum whatever's there, the last 3 days of the range
+silently summed to zero instead of not being counted at all — reading as
+a real end-of-month slowdown rather than a data gap.
+
+**Fix**, in `handleMonthToDate` (`App.js`): compute the latest date
+present across `attendanceRows`/`salesRows` (same pattern already used by
+`computeDefaultCompareRange`) and use that as range B's `to` instead of
+today's date, whenever it falls within the current month. Falls back to
+today if there's no data yet this month (e.g. right after a month
+rollover, before the first upload) — same as the old behavior in that
+edge case. The prior-month side (range A) now caps its day-of-month to
+match range B's capped day instead of today's day-of-month, so a
+7-days-of-data current month compares against the *same first 7 days* of
+last month rather than 10.
+
+Verified via `CI=true npm run build` only — **not yet clicked through in
+a real browser** (same standing gap as every UI session on this machine,
+no browser automation tool available). Before trusting it: with real
+uploaded data that doesn't reach today, click "This month vs last month"
+and confirm range B's date picker shows the last upload date, not today.
 
 ## Weekly Report data ported from Lauren's live site (2026-08-10)
 
