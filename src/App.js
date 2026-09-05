@@ -1042,8 +1042,162 @@ function UploadLogTab({ uploadLog }) {
   );
 }
 
+// ─── Calendar ───────────────────────────────────────────────────────────────
+const CALENDAR_KEY = 'calendar_events';
+const CAL_WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function startOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
+
+// Always returns full weeks (a multiple of 7 cells) so the grid never
+// reflows height between months — leading/trailing cells from the
+// neighboring months are included but dimmed and still clickable.
+function buildMonthGrid(monthStart) {
+  const firstWeekday = monthStart.getDay();
+  const daysInMonth = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0).getDate();
+  const daysInPrevMonth = new Date(monthStart.getFullYear(), monthStart.getMonth(), 0).getDate();
+  const cells = [];
+  for (let i = firstWeekday - 1; i >= 0; i--) {
+    cells.push({ date: new Date(monthStart.getFullYear(), monthStart.getMonth() - 1, daysInPrevMonth - i), outside: true });
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    cells.push({ date: new Date(monthStart.getFullYear(), monthStart.getMonth(), d), outside: false });
+  }
+  while (cells.length % 7 !== 0) {
+    const last = cells[cells.length - 1].date;
+    const next = new Date(last); next.setDate(next.getDate() + 1);
+    cells.push({ date: next, outside: true });
+  }
+  return cells;
+}
+
+function CalendarTab({ events, onAdd, onDelete }) {
+  const [monthStart, setMonthStart] = useState(() => startOfMonth(new Date()));
+  const todayISO = toISODate(new Date());
+  const [selectedDate, setSelectedDate] = useState(todayISO);
+  const [title, setTitle] = useState('');
+  const [notes, setNotes] = useState('');
+  const [store, setStore] = useState('All Stores');
+
+  const cells = useMemo(() => buildMonthGrid(monthStart), [monthStart]);
+
+  const eventsByDate = useMemo(() => {
+    const map = new Map();
+    events.forEach(ev => {
+      if (!map.has(ev.date)) map.set(ev.date, []);
+      map.get(ev.date).push(ev);
+    });
+    return map;
+  }, [events]);
+
+  const selectedEvents = useMemo(
+    () => (eventsByDate.get(selectedDate) || []).slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    [eventsByDate, selectedDate]
+  );
+
+  const upcoming = useMemo(
+    () => events.filter(ev => ev.date >= todayISO).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 6),
+    [events, todayISO]
+  );
+
+  const handleSubmit = e => {
+    e.preventDefault();
+    if (!title.trim()) return;
+    onAdd({ id: newId(), date: selectedDate, title: title.trim(), notes: notes.trim(), store, createdAt: new Date().toISOString() });
+    setTitle('');
+    setNotes('');
+  };
+
+  const monthLabel = monthStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+  return (
+    <div className="tab-content cal-tab">
+      <div className="cal-header">
+        <span className="cal-month-label">{monthLabel}</span>
+        <div className="cal-nav">
+          <button type="button" className="cal-nav-btn" onClick={() => setMonthStart(m => new Date(m.getFullYear(), m.getMonth() - 1, 1))}>‹</button>
+          <button type="button" className="btn-ghost cal-today-btn" onClick={() => { setMonthStart(startOfMonth(new Date())); setSelectedDate(todayISO); }}>Today</button>
+          <button type="button" className="cal-nav-btn" onClick={() => setMonthStart(m => new Date(m.getFullYear(), m.getMonth() + 1, 1))}>›</button>
+        </div>
+      </div>
+
+      <div className="cal-grid">
+        {CAL_WEEKDAY_LABELS.map(w => <div key={w} className="cal-weekday">{w}</div>)}
+        {cells.map(({ date, outside }) => {
+          const iso = toISODate(date);
+          const dayEvents = eventsByDate.get(iso) || [];
+          const classes = ['cal-day'];
+          if (outside) classes.push('cal-day--outside');
+          if (iso === todayISO) classes.push('cal-day--today');
+          if (iso === selectedDate) classes.push('cal-day--selected');
+          return (
+            <button key={iso} type="button" className={classes.join(' ')} onClick={() => setSelectedDate(iso)}>
+              <span className="cal-day-num">{date.getDate()}</span>
+              {dayEvents.length > 0 && (
+                <span className="cal-day-dot-row">
+                  {dayEvents.slice(0, 3).map(ev => <span key={ev.id} className="cal-day-dot" />)}
+                  {dayEvents.length > 3 && <span className="cal-day-more">+{dayEvents.length - 3}</span>}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="cal-panel">
+        <div className="cal-panel-head">
+          <span className="cal-panel-title">{fmtDateShort(selectedDate)}</span>
+        </div>
+        {selectedEvents.length === 0 && <p className="cal-empty-note">No events yet for this day.</p>}
+        {selectedEvents.length > 0 && (
+          <div className="cal-event-list">
+            {selectedEvents.map(ev => (
+              <div key={ev.id} className="cal-event-row">
+                <div className="cal-event-main">
+                  <span className="cal-event-title">{ev.title}</span>
+                  {ev.notes && <span className="cal-event-notes">{ev.notes}</span>}
+                  {ev.store && ev.store !== 'All Stores' && <span className="cal-event-store">{ev.store}</span>}
+                </div>
+                <button type="button" className="cal-event-del" onClick={() => onDelete(ev.id)}>Remove</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <form className="cal-form" onSubmit={handleSubmit}>
+          <div className="cal-form-row">
+            <input
+              type="text" className="cal-form-title" placeholder="Event title"
+              value={title} onChange={e => setTitle(e.target.value)}
+            />
+            <select className="cal-form-store" value={store} onChange={e => setStore(e.target.value)}>
+              <option>All Stores</option>
+              {STORE_ROSTER.stores.map(s => <option key={s.name}>{s.name}</option>)}
+            </select>
+          </div>
+          <textarea placeholder="Notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} />
+          <button type="submit" className="btn-primary" disabled={!title.trim()}>Add event</button>
+        </form>
+      </div>
+
+      {upcoming.length > 0 && (
+        <div className="cal-panel">
+          <span className="cal-panel-title">Upcoming</span>
+          <div className="cal-upcoming-list">
+            {upcoming.map(ev => (
+              <div key={ev.id} className="cal-upcoming-row">
+                <span className="cal-upcoming-date">{fmtDateShort(ev.date)}</span>
+                <span className="cal-upcoming-title">{ev.title}</span>
+                {ev.store && ev.store !== 'All Stores' && <span className="cal-upcoming-store">{ev.store}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── App ────────────────────────────────────────────────────────────────────
-const TABS = ['Overview', 'Employee Performance', 'By Store', 'P&L', 'Weekly Report', 'Upload Log', 'Setup'];
+const TABS = ['Overview', 'Employee Performance', 'By Store', 'P&L', 'Weekly Report', 'Calendar', 'Upload Log', 'Setup'];
 const COMPARE_TABS = ['Overview', 'Employee Performance', 'By Store', 'P&L'];
 const emptyRange = { a: { from: '', to: '' }, b: { from: '', to: '' } };
 const emptyCollections = { stores: {}, grandTotal: null };
@@ -1060,6 +1214,7 @@ export default function App() {
   const [uploadingKind, setUploadingKind] = useState(null); // 'attendance'|'sales'|'collections'|null
   const [fixedExpenses, setFixedExpenses] = useState({}); // { [storeName]: { rent, utilities, ... } }
   const [weeklyReportData, setWeeklyReportData] = useState(emptyWeeklyReportData());
+  const [calendarEvents, setCalendarEvents] = useState([]);
 
   useEffect(() => {
     Promise.all([loadAttendanceEntries(), loadSalesEntries(), loadPeriods()]).then(([att, sal, periodsRes]) => {
@@ -1083,6 +1238,7 @@ export default function App() {
       setFixedExpenses(withDefaults);
       if (seeded) savePeriod('fixed_expenses', withDefaults);
       setWeeklyReportData({ ...emptyWeeklyReportData(), ...(saved[WEEKLY_REPORT_KEY] || {}) });
+      setCalendarEvents(saved[CALENDAR_KEY] || []);
       setLoading(false);
 
       const failed = [att, sal, periodsRes].find(r => r.source === 'local' && r.error);
@@ -1198,6 +1354,22 @@ export default function App() {
     }
   }, [fixedExpenses]);
 
+  const handleAddEvent = useCallback(async (event) => {
+    setCalendarEvents(prev => {
+      const next = [...prev, event];
+      savePeriod(CALENDAR_KEY, next);
+      return next;
+    });
+  }, []);
+
+  const handleDeleteEvent = useCallback(async (id) => {
+    setCalendarEvents(prev => {
+      const next = prev.filter(ev => ev.id !== id);
+      savePeriod(CALENDAR_KEY, next);
+      return next;
+    });
+  }, []);
+
   const hoursA = useMemo(() => {
     const a = aggregateAttendance(attendanceRows, compareRange.a.from, compareRange.a.to);
     return a && a.employees.length ? a : null;
@@ -1257,6 +1429,9 @@ export default function App() {
         )}
         {tab === 'Weekly Report' && (
           <WeeklyReportTab data={weeklyReportData} onChange={setWeeklyReportData} showToast={showToast} />
+        )}
+        {tab === 'Calendar' && (
+          <CalendarTab events={calendarEvents} onAdd={handleAddEvent} onDelete={handleDeleteEvent} />
         )}
         {tab === 'Upload Log' && <UploadLogTab uploadLog={uploadLog} />}
         {tab === 'Setup' && (

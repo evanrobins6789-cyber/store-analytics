@@ -1,12 +1,56 @@
 # Handoff — Waxing The City Analytics ("Employee Performance")
 
-Last updated: 2026-09-04 — **Color scheme changed from orange/"brass" to
-purple/lavender** (Waxing The City brand color), see "Color scheme —
-brass/orange swapped for purple/lavender" right below. The 2026-08-10
-DEPLOY SNAG (missing GRANTs on attendance_entries/sales_entries,
-further below) is still the last known code-relevant item and was not
-reconfirmed this session — check that first if attendance/sales
-uploads are being worked on.
+Last updated: 2026-09-04 — **New Calendar tab added**, see "New Calendar
+tab — add/view/delete events" right below. Same session also swapped
+the color scheme from orange/"brass" to purple/lavender (next entry
+down). The 2026-08-10 DEPLOY SNAG (missing GRANTs on
+attendance_entries/sales_entries, further below) is still the last
+known code-relevant item and was not reconfirmed this session — check
+that first if attendance/sales uploads are being worked on.
+
+## New Calendar tab — add/view/delete events (2026-09-04)
+
+User asked for a calendar tab to add events to. Built as a new
+**"Calendar"** tab (`CalendarTab` in `App.js`, between Weekly Report and
+Upload Log in the nav) — a month-grid view with prev/month/next/Today
+navigation; clicking a day selects it and shows a panel below the grid
+listing that day's events plus a small add-event form (title, optional
+notes, optional store — "All Stores" or one of the three
+`STORE_ROSTER` stores); each event has a Remove button. A separate
+"Upcoming" panel lists the next 6 events from today onward across the
+whole calendar, not just the selected day.
+
+**Storage**: reuses the existing generic `periods` table (see
+`src/db.js`) under a new key, `calendar_events` — a flat array of
+`{ id, date (YYYY-MM-DD), title, notes, store, createdAt }`, same
+`savePeriod`/`loadPeriods` pattern already used for `fixed_expenses` and
+`weekly_report`. **No new Supabase table, no SQL, no migration
+needed** — deliberately not built as its own row-level table like
+`attendance_entries`/`sales_entries`, since a store's event count will
+stay small (tens, not thousands of ever-growing upload rows), so
+rewriting the whole array on every add/delete is cheap and this sidesteps
+the exact GRANT-permissions bug from the 2026-08-10 DEPLOY SNAG entry
+below entirely (no new table means nothing to forget to GRANT).
+
+Events are global (not scoped to who added them) and not tied to any
+Attendance/Sales upload or date range — they're independent of the
+CompareBar and don't interact with any other tab's data.
+
+Verified via `CI=true npm run build` only (compiles clean, no ESLint
+warnings) — **not yet clicked through in a real browser**, same
+standing gap as everything else in this app. Before trusting it: open
+the Calendar tab, add an event on today and on a couple of different
+days (including a day in next month, to check the prev/next month nav
+carries the right dates), confirm it shows up in both the day cell (dot
+indicator) and the Upcoming list, remove one, and reload the page to
+confirm it persisted (to Supabase if configured, otherwise
+localStorage).
+
+**Not done / reasonable follow-ups if asked**: no edit-in-place for an
+existing event (delete + re-add works around it); no recurring events;
+no per-event delete confirmation (single click removes immediately,
+unlike "Delete all data" elsewhere in this app which confirms first);
+no way to filter the month view or Upcoming list by store.
 
 ## Color scheme — brass/orange swapped for purple/lavender (2026-09-04)
 
