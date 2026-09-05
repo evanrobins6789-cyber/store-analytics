@@ -632,8 +632,8 @@ function EmployeesTab({ p1, p2, label1, label2 }) {
   const chartData = {
     labels: chartRows.map(r => r.name),
     datasets: [
-      { label: label1, data: chartRows.map(r => r.p1?.revPerHour != null ? Math.round(r.p1.revPerHour * 100) / 100 : null), backgroundColor: '#C25E00', borderRadius: 4 },
-      { label: label2, data: chartRows.map(r => r.p2?.revPerHour != null ? Math.round(r.p2.revPerHour * 100) / 100 : null), backgroundColor: '#F2A153', borderRadius: 4 },
+      { label: label1, data: chartRows.map(r => r.p1?.revPerHour != null ? Math.round(r.p1.revPerHour * 100) / 100 : null), backgroundColor: '#5C2E80', borderRadius: 4 },
+      { label: label2, data: chartRows.map(r => r.p2?.revPerHour != null ? Math.round(r.p2.revPerHour * 100) / 100 : null), backgroundColor: '#B47EDB', borderRadius: 4 },
     ],
   };
   const chartOpts = {

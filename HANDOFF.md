@@ -1,11 +1,101 @@
 # Handoff — Waxing The City Analytics ("Employee Performance")
 
-Last updated: 2026-08-10 — **Royalties on the P&L tab are now always a
-flat 6% of collections, computed live, no longer manually entered.** See
-"P&L — Royalties now a flat 6% of collections" right below. Still pending
-from earlier today: "DEPLOY SNAG — new tables returned 401, missing
-GRANTs" — not yet confirmed fixed by the user, check that first if
-attendance/sales uploads are being worked on.
+Last updated: 2026-09-04 — **Color scheme changed from orange/"brass" to
+purple/lavender** (Waxing The City brand color), see "Color scheme —
+brass/orange swapped for purple/lavender" right below. The 2026-08-10
+DEPLOY SNAG (missing GRANTs on attendance_entries/sales_entries,
+further below) is still the last known code-relevant item and was not
+reconfirmed this session — check that first if attendance/sales
+uploads are being worked on.
+
+## Color scheme — brass/orange swapped for purple/lavender (2026-09-04)
+
+User asked to change the site's look; picked "Waxing the City
+purple/lavender" over the existing orange from a couple of clarifying
+questions (new palette vs. layout redesign; then which palette).
+
+**Change**: every orange color reference replaced with a purple
+equivalent, layout/structure untouched. In `src/App.css`, the three CSS
+custom properties that drive nearly all of the accent color
+(`--brass: #7A3FA6`, `--brass-deep: #5C2E80`, `--brass-bright:
+#B47EDB`, renamed values only — kept the existing `--brass*` variable
+*names* since dozens of rules and the `upload-slot--brass` class
+reference them by name and renaming would've been a pure-risk, no-value
+change). Also replaced every hardcoded orange literal that wasn't
+routed through those variables: the two background radial-gradients in
+`.app`, ~10 `rgba(242,121,12,*)` tinted-background rules (compare bar,
+summary/ledger/P&L highlight rows, hover states), and ~6 hardcoded
+light-tint hex backgrounds (`#FFF3E6`, `#FFF1E2`, `#FFE6C7`, `#FFE9CC`,
+`#FBEBD4`) swapped for lavender-tinted equivalents at the same
+lightness/alpha. Outside App.css: the two revenue-per-hour chart bar
+colors in `App.js` (`#C25E00`→`#5C2E80`, `#F2A153`→`#B47EDB`), the
+Weekly Report pacing chart's "current period" series color in
+`src/weeklyReport/compute.js` (`#F2790C`→`#7A3FA6`), and the PWA theme
+color in `public/index.html` + `public/manifest.json`
+(`#F2790C`→`#7A3FA6`, controls the mobile browser chrome/status-bar
+tint).
+
+**Deliberately left alone**: the semantic colors that aren't part of
+the brass/orange family — sage green (up/positive), rust red
+(down/negative), steel blue (compare-range "A" tag), and the soft
+yellow `#FFF2CC` "total row" highlight — since those encode meaning
+(good/bad/which-side), not brand color, and swapping them wasn't asked
+for. `src/tabs/*.js`/`src/styles.css` (confirmed dead/unused, see File
+map below) were not touched.
+
+Verified via `CI=true npm run build` only (compiles clean, confirmed no
+remaining `F2790C`/`C25E00`/`FF9A47`/orange-rgba references anywhere in
+`src/`) — **not yet clicked through in a real browser**, same standing
+gap as everything else in this app. Before trusting it: open the app
+and eyeball every tab (Overview/Employee Performance/By Store/P&L/Weekly
+Report/History/Setup) for any color that still reads orange or looks
+off against the new purple, especially the P&L "% of income"/total rows
+and the Weekly Report goal thermometers/pacing charts.
+
+Also folded in this push: an uncommitted `.gitignore` fix (adds
+`.vercel`, `.env*`) and the prior session's HANDOFF.md update for the
+September Plan artifact — both were sitting uncommitted in the working
+tree from 2026-09-02, unrelated to this session's work but swept in
+together per this repo's push-to-main-when-build-verified preference.
+
+## September Plan — leadership reference artifact created, no code changes (2026-09-02)
+
+User asked for a one-page plan they (leadership) could reference/print,
+covering September goals and a few operational changes. Built as a
+Claude Artifact (a published one-page design canvas), not app code —
+nothing in this repo changed.
+
+**Content**: TSTH goal $35/hr across all studios; Hours/Sales goals per
+studio (Media 500 hrs / $18,000, Concord 500 hrs / $18,000, Pike Creek
+720 hrs / $26,000); Mon/Tue/Wed staffing cut to two people per studio;
+retail SKU discount reset (discounting non-selling/worst-ROI SKUs, with
+proceeds going toward restocking newer, better-performing SKUs and
+existing top sellers); a new inventory-tracking site launching to track
+supply usage per service and cut overspending; the "first wax free"
+membership signup promo ending September 30, 2026; an October 1
+transition to Packages.
+
+**Explicitly left open, on purpose**: the Packages incentive is shown
+as "Pending — leadership finalizing," not proposed by Claude. An
+earlier draft invented three incentive options to fill that gap and the
+user corrected it — leadership decides that themselves. Saved as a
+standing preference (see `feedback-no-invented-business-decisions`
+memory): don't propose specific business/strategy decisions (incentive
+structures, pricing, etc.) in documents for this business, just flag
+them as pending.
+
+**Iterated per feedback across a few rounds**: started as a longer
+flowing page, cut down to a true one-page Letter-size (816×1056, fixed
+print) layout for readability; removed a bottom timeline strip the user
+didn't want; re-labeled the header from "Team Kickoff" to "Leadership
+Reference" and softened staff-directed phrasing, since the user said
+this is for leadership's own reference, not something shown to staff.
+
+**Link**: https://claude.ai/code/artifact/2d4e257f-88d5-40a9-9644-139a6964c1c5
+— a private Claude Artifact, exportable to PDF from its own toolbar.
+Not stored anywhere in this git repo or in Supabase; if this needs to
+live in-repo or sync with app data, that's a follow-up someone would
+need to ask for explicitly.
 
 ## P&L — Royalties now a flat 6% of collections, not manually entered (2026-08-10)
 

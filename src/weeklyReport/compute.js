@@ -279,7 +279,7 @@ function monthTotals(studioData, studios, mKey) {
 }
 
 export const PACING_PERIODS = [
-  { key: 'current', color: '#F2790C' },
+  { key: 'current', color: '#7A3FA6' },
   { key: 'lastMonth', color: '#8A6D3B' },
   { key: 'lastYear', color: '#5C7A5A' },
 ];
