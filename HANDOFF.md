@@ -8,6 +8,17 @@ attendance_entries/sales_entries, further below) is still the last
 known code-relevant item and was not reconfirmed this session — check
 that first if attendance/sales uploads are being worked on.
 
+## Staff goals one-pager, no code changes (2026-09-25)
+
+User asked for a one-page form to learn each staff member's top financial,
+personal, and career goals (with a timeline for each) so managers can check
+in and help. Built outside this repo: `~/Downloads/wtc-goals.pdf` (printable,
+one Letter page) and a phone version at
+https://claude.ai/artifact/2CcZKsqUb2L88oaQ3aw7FV with a "Copy my answers"
+button staff paste into a text to their manager. Answers aren't collected
+centrally, and the artifact is private until shared from its Share menu.
+A matching Supercuts version exists too.
+
 ## New Calendar tab — add/view/delete events (2026-09-04)
 
 User asked for a calendar tab to add events to. Built as a new
